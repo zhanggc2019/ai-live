@@ -36,7 +36,7 @@ const PlatformSelect = React.memo(() => {
 
   return (
     <Select value={platform} onValueChange={setPlatform} disabled={isConnected !== 'disconnected'}>
-      <SelectTrigger className="w-[140px]">
+      <SelectTrigger id="live-platform" className="w-full">
         <SelectValue placeholder="选择平台" />
       </SelectTrigger>
       <SelectContent>

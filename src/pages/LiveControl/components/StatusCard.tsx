@@ -1,10 +1,12 @@
 import { useMemoizedFn } from 'ahooks'
-import { CheckIcon, CircleAlert, GlobeIcon, XIcon } from 'lucide-react'
-import React, { useState } from 'react'
+import { ArrowRight, CircleAlert, GlobeIcon, XIcon } from 'lucide-react'
+import React from 'react'
+import { Link } from 'react-router'
 import { IPC_CHANNELS } from 'shared/ipcChannels'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Label } from '@/components/ui/label'
 import { Separator } from '@/components/ui/separator'
 import { Switch } from '@/components/ui/switch'
 import { useAccounts } from '@/hooks/useAccounts'
@@ -57,25 +59,38 @@ const StatusAlert = React.memo(() => {
   return null
 })
 
+/** 将平台选择、连接状态和连接后的开播入口放在一起。 */
 const StatusCard = React.memo(() => {
+  const connected = useCurrentLiveControl(context => context.isConnected === 'connected')
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>控制台状态</CardTitle>
-        <CardDescription>查看并管理直播控制台的连接状态</CardDescription>
+    <Card className="shadow-none">
+      <CardHeader className="px-5 pt-5 pb-4">
+        <CardTitle>平台连接</CardTitle>
+        <CardDescription>
+          <ConnectState />
+        </CardDescription>
       </CardHeader>
-      <CardContent>
+      <CardContent className="px-5 pb-5">
         <div className="space-y-4">
-          <div className="flex items-center justify-between">
-            <ConnectState />
-            <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-end gap-2">
+            <div className="min-w-36 flex-1 space-y-2">
+              <Label htmlFor="live-platform">直播平台</Label>
               <PlatformSelect />
-              <ConnectToLiveControl />
             </div>
+            <ConnectToLiveControl />
           </div>
           <StatusAlert />
           <Separator />
           <HeadlessSetting />
+          {connected && (
+            <div className="flex justify-end border-t pt-4">
+              <Button asChild>
+                <Link to="/live-speech#broadcast-setup">
+                  去开播准备 <ArrowRight />
+                </Link>
+              </Button>
+            </div>
+          )}
         </div>
       </CardContent>
     </Card>
@@ -157,35 +172,20 @@ const ConnectToLiveControl = React.memo(() => {
 const ConnectButton = React.memo(
   ({ isLoading, handleButtonClick }: { isLoading: boolean; handleButtonClick: () => void }) => {
     return (
-      <Button variant={'default'} onClick={handleButtonClick} disabled={isLoading} size="sm">
-        <GlobeIcon className="mr-2 h-4 w-4" />
+      <Button onClick={handleButtonClick} disabled={isLoading}>
+        <GlobeIcon />
         {isLoading ? '连接中...' : '连接直播控制台'}
       </Button>
     )
   },
 )
 
+/** 连接状态与断开操作各自使用固定标签。 */
 const DisconnectButton = React.memo(({ handleButtonClick }: { handleButtonClick: () => void }) => {
-  const [isHovered, setIsHovered] = useState(false)
   return (
-    <Button
-      variant="secondary"
-      onClick={handleButtonClick}
-      size="sm"
-      onMouseEnter={() => setIsHovered(true)}
-      onMouseLeave={() => setIsHovered(false)}
-    >
-      {isHovered ? (
-        <>
-          <XIcon className="mr-2 h-4 w-4" />
-          断开连接
-        </>
-      ) : (
-        <>
-          <CheckIcon className="mr-2 h-4 w-4" />
-          已连接
-        </>
-      )}
+    <Button variant="outline" onClick={handleButtonClick}>
+      <XIcon />
+      断开连接
     </Button>
   )
 })
@@ -194,14 +194,19 @@ const ConnectState = React.memo(() => {
   const isConnected = useCurrentLiveControl(context => context.isConnected)
   const accountName = useCurrentLiveControl(context => context.accountName)
   return (
-    <div className="flex items-center gap-4">
-      <div
-        className={`w-2 h-2 rounded-full ${isConnected === 'connected' ? 'bg-green-500' : 'bg-gray-300'}`}
+    <span className="flex items-center gap-2" role="status">
+      <span
+        aria-hidden="true"
+        className={`size-2 rounded-full ${isConnected === 'connected' ? 'bg-emerald-600' : 'bg-muted-foreground'}`}
       />
       <span className="text-sm text-muted-foreground">
-        {isConnected === 'connected' ? `已连接${accountName ? ` (${accountName})` : ''}` : '未连接'}
+        {isConnected === 'connected'
+          ? `已连接${accountName ? ` (${accountName})` : ''}`
+          : isConnected === 'connecting'
+            ? '正在连接'
+            : '未连接'}
       </span>
-    </div>
+    </span>
   )
 })
 
@@ -211,14 +216,15 @@ const HeadlessSetting = () => {
   const isConnected = useCurrentLiveControl(context => context.isConnected)
   const { setHeadless } = useCurrentChromeConfigActions()
   return (
-    <div className="flex justify-between items-center">
+    <div className="flex items-center justify-between gap-3">
       <div>
-        <div className="text-sm">无头模式</div>
+        <Label htmlFor="headless-browser">后台运行浏览器</Label>
         <div className="text-muted-foreground text-xs">
           开启后浏览器将在后台运行，不会在桌面显示
         </div>
       </div>
       <Switch
+        id="headless-browser"
         checked={headless && platform !== 'taobao'}
         disabled={platform === 'taobao' || isConnected !== 'disconnected'}
         onCheckedChange={v => setHeadless(v)}

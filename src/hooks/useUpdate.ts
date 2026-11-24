@@ -1,116 +1,115 @@
-import { useCallback, useState } from 'react'
+import type { AppUpdate } from 'shared/appUpdate'
 import { IPC_CHANNELS } from 'shared/ipcChannels'
 import { create } from 'zustand'
 import { createJSONStorage, persist } from 'zustand/middleware'
-import { createSelectors } from '@/utils/zustand'
-import { useIpcListener } from './useIpc'
 
-export type UpdateStatus =
-  | 'idle' // 空闲
-  | 'checking' // 通过 CDN 简单检查最新版本号
-  | 'available' // 有可用更新 (已获取到信息，等待用户确认)
-  | 'preparing' // 用户点击更新后，正在请求 Electron-Updater 确认链接
-  | 'downloading' // 正在下载
-  | 'ready' // 下载完成，等待重启
-  | 'error' // 发生错误
+type UpdateStatus =
+  | 'idle'
+  | 'checking'
+  | 'available'
+  | 'downloading'
+  | 'ready'
+  | 'installing'
+  | 'error'
 
-export interface VersionState {
-  currentVersion: string
-  latestVersion: string
-  releaseNote?: string
-}
-
-interface UpdateState {
+interface UpdateStore {
   status: UpdateStatus
-  versionInfo: VersionState | null
+  info?: AppUpdate
   progress: number
-  error: ErrorType | null
-  source: string
-}
-
-interface UpdateAction {
-  checkUpdateManually: () => Promise<{ upToDate: boolean } | undefined>
-  startDownload: (source: string) => void
-  installUpdate: () => void
+  error?: string
+  open: boolean
+  setOpen: (open: boolean) => void
+  check: (silent?: boolean) => Promise<boolean>
+  download: () => Promise<void>
   setProgress: (progress: number) => void
-  setStatus: (status: UpdateStatus) => void
-  reset: () => void
-  handleError: (error: ErrorType) => void
-  handleUpdate: (info: VersionState) => void
-  setSource: (source: string) => void
+  install: () => Promise<void>
+  handleInstallError: (error: string) => void
 }
 
-type UpdateStore = UpdateState & UpdateAction
-
-const useUpdateStoreBase = create<UpdateStore>()((set, get) => ({
+export const useUpdateStore = create<UpdateStore>()((set, get) => ({
   status: 'idle',
-  versionInfo: null,
   progress: 0,
-  error: null,
-  source: 'github',
+  open: false,
+  setOpen: open => set({ open }),
 
-  checkUpdateManually: async () => {
-    set({ status: 'checking', error: null })
+  /** 主动检查时显示错误，启动检查在失败时仅保留正常界面。 */
+  async check(silent = false) {
+    const { status } = get()
+    if (status === 'checking') return false
+    if (status === 'downloading' || status === 'ready' || status === 'installing') {
+      if (!silent) set({ open: true })
+      return false
+    }
+    set({ status: 'checking', error: undefined })
     try {
-      // 这里只获取信息，不触发 electron-updater
-      const result = await window.ipcRenderer.invoke(IPC_CHANNELS.updater.checkUpdate)
-      if (result) {
-        set({ status: 'available', versionInfo: result })
-      } else {
-        set({ status: 'idle' })
-        return { upToDate: true }
-      }
-    } catch (e) {
-      set({ status: 'error', error: { message: (e as Error).message || '检查更新失败' } })
+      const info = await window.ipcRenderer.invoke(IPC_CHANNELS.updater.checkUpdate)
+      set({ status: info ? 'available' : 'idle', info, open: Boolean(info), progress: 0 })
+      return !info
+    } catch (error) {
+      set({
+        status: silent ? 'idle' : 'error',
+        info: undefined,
+        error: error instanceof Error ? error.message : '检查更新失败',
+        open: !silent,
+      })
+      return false
     }
   },
-  startDownload: (source: string) => {
-    set({ status: 'preparing' })
-    window.ipcRenderer.invoke(IPC_CHANNELS.updater.startDownload, source)
-  },
-  installUpdate: () => {
-    set({ status: 'ready' })
-    window.ipcRenderer.invoke(IPC_CHANNELS.updater.quitAndInstall)
-  },
-  setStatus: (status: UpdateStatus) => set({ status }),
-  setProgress: (progress: number) => set({ progress }),
-  reset: () => set({ status: 'idle', progress: 0, versionInfo: null, error: null }),
-  handleError: (error: ErrorType) => {
-    if (get().status === 'preparing' || get().status === 'downloading') {
-      set({ status: 'error', error })
+
+  /** 下载状态在关闭窗口后保留，方便随时回到更新界面。 */
+  async download() {
+    const { info, status } = get()
+    if (!info?.canInstallInApp || status !== 'available') return
+    set({ status: 'downloading', progress: 0, error: undefined })
+    try {
+      await window.ipcRenderer.invoke(IPC_CHANNELS.updater.startDownload, info.latestVersion)
+      set({ status: 'ready', progress: 100, open: true })
+    } catch (error) {
+      set({
+        status: 'error',
+        error: error instanceof Error ? error.message : '下载更新失败',
+        open: true,
+      })
     }
   },
-  handleUpdate: (info: VersionState) => {
-    if (get().status === 'idle') {
-      set({ status: 'available', versionInfo: info })
+
+  /** 只接收当前下载操作的进度。 */
+  setProgress(progress) {
+    if (get().status === 'downloading') set({ progress })
+  },
+
+  /** 保留已校验的安装包，让安装失败后可以直接重试。 */
+  async install() {
+    if (get().status !== 'ready') return
+    set({ status: 'installing', error: undefined })
+    try {
+      await window.ipcRenderer.invoke(IPC_CHANNELS.updater.quitAndInstall)
+    } catch (error) {
+      get().handleInstallError(error instanceof Error ? error.message : '启动安装失败')
     }
   },
-  setSource: (source: string) => set({ source }),
+
+  /** 接收原生安装器报告的错误，并允许再次确认安装。 */
+  handleInstallError(error) {
+    if (get().status === 'installing') set({ status: 'ready', error, open: true })
+  },
 }))
 
-export const useUpdateStore = createSelectors(useUpdateStoreBase)
 interface UpdateConfigStore {
   enableAutoCheckUpdate: boolean
-  source: string
-  customSource: string
   setEnableAutoCheckUpdate: (enabled: boolean) => void
-  setSource: (source: string) => void
-  setCustomSource: (customSource: string) => void
 }
 
 export const useUpdateConfigStore = create<UpdateConfigStore>()(
   persist(
     set => ({
       enableAutoCheckUpdate: true,
-      source: 'github',
-      customSource: '',
       setEnableAutoCheckUpdate: enabled => set({ enableAutoCheckUpdate: enabled }),
-      setSource: source => set({ source }),
-      setCustomSource: customSource => set({ customSource }),
     }),
     {
       name: 'update-storage',
       storage: createJSONStorage(() => localStorage),
+      partialize: ({ enableAutoCheckUpdate }) => ({ enableAutoCheckUpdate }),
     },
   ),
 )

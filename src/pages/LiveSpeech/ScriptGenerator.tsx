@@ -14,7 +14,7 @@ import {
   AlertDialogTrigger,
 } from '@/components/ui/alert-dialog'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Card, CardContent, CardDescription, CardHeader } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import {
@@ -35,7 +35,7 @@ import {
 } from '@/services/voice/scriptGeneration'
 
 /** 生成可编辑的长话术，支持命名保存、另存及下次开播选用。 */
-export function ScriptGenerator() {
+export function ScriptGenerator({ onUseScript }: { onUseScript: (id: string) => void }) {
   const accountId = useAccounts(state => state.currentAccountId)
   useVoiceConfigStore(state => state.contexts[accountId])
   const config = getVoiceConfig(accountId)
@@ -55,7 +55,7 @@ export function ScriptGenerator() {
   }
 
   /** 将编辑区里的正文和商品资料一起保存为同一个话术版本。 */
-  function save(asNew: boolean) {
+  function save(asNew: boolean, useForBroadcast = false) {
     try {
       const current = getVoiceConfig(accountId)
       const savedScripts = saveLiveScript(current.savedScripts, {
@@ -72,7 +72,8 @@ export function ScriptGenerator() {
         scriptDraftTitle: savedScripts[0].title,
         generatedScript: savedScripts[0].content,
       })
-      toast.success('话术与商品资料已保存，请到页面顶部选择本次播报话术')
+      if (useForBroadcast) onUseScript(savedScripts[0].id)
+      toast.success(useForBroadcast ? '话术已保存并选用' : '话术与商品资料已保存')
     } catch (error) {
       toast.error(error instanceof Error ? error.message : '保存失败')
     }
@@ -126,29 +127,44 @@ export function ScriptGenerator() {
   )
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2">
-          <Sparkles className="h-5 w-5" />
-          AI 话术与商品资料 · 编辑区
-        </CardTitle>
-        <CardDescription>
-          每份话术独立保存正文、商品要素与参考资料。这里打开话术仅供编辑，不会切换本次播报。
-          文案模型支持 DeepSeek 和第三方 OpenAI 兼容服务，可在「配置文本模型」中填写接口地址、模型
-          ID 和 API Key。
-        </CardDescription>
+    <Card id="script-studio" className="@container min-w-0 scroll-mt-4 shadow-none">
+      <CardHeader className="px-5 pt-5 pb-4">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h2 className="text-lg font-semibold">文案生成</h2>
+          <Button variant="outline" size="sm" disabled={busy} onClick={newDraft}>
+            新建话术
+          </Button>
+        </div>
+        <CardDescription>填写商品资料，生成或编辑直播话术。</CardDescription>
       </CardHeader>
-      <CardContent className="space-y-5">
-        <div className="grid gap-4 xl:grid-cols-2">
-          <div className="space-y-2">
+      <CardContent className="space-y-4 px-5 pb-5">
+        {config.savedScripts.length > 0 && (
+          <div className="space-y-2 border-b pb-4">
+            <Label htmlFor="script-library">打开已保存话术</Label>
+            <Select disabled={busy} value={config.scriptDraftId || undefined} onValueChange={load}>
+              <SelectTrigger id="script-library" className="w-full">
+                <SelectValue placeholder="选择一份话术载入编辑器" />
+              </SelectTrigger>
+              <SelectContent>
+                {config.savedScripts.map(script => (
+                  <SelectItem key={script.id} value={script.id}>
+                    {script.title} · {countScriptCharacters(script.content)} 字
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+        )}
+        <div className="grid gap-3 @min-[420px]:grid-cols-2">
+          <div className="space-y-2 @min-[420px]:col-span-2">
             <Label htmlFor="script-product-intro">简短产品介绍</Label>
             <Textarea
               id="script-product-intro"
               value={config.productIntro}
               maxLength={8000}
               disabled={busy}
-              className="min-h-32"
-              placeholder="例如：500 毫升水杯，适合上班通勤，杯盖可拆洗。请补充已确认的规格、卖点和适用人群。"
+              className="min-h-16"
+              placeholder="例如：500 毫升通勤水杯，杯盖可拆洗，适合办公室和出差。"
               onChange={event => update(accountId, { productIntro: event.target.value })}
             />
           </div>
@@ -159,31 +175,31 @@ export function ScriptGenerator() {
               value={config.scriptRequirements}
               maxLength={1000}
               disabled={busy}
-              className="min-h-32"
+              className="min-h-16"
               placeholder="例如：亲切自然、不喊麦，重点讲解日常使用场景，适当穿插互动问题。"
               onChange={event => update(accountId, { scriptRequirements: event.target.value })}
             />
           </div>
+          <div className="space-y-2">
+            <Label htmlFor="script-reference-text">商品要素与参考资料</Label>
+            <Textarea
+              id="script-reference-text"
+              aria-label="商品要素与参考资料"
+              value={config.referenceText}
+              maxLength={12000}
+              disabled={busy}
+              className="min-h-16"
+              placeholder="产品名称、规格与适用人群、已确认的价格和优惠、常见问题与参考回答……"
+              onChange={event => update(accountId, { referenceText: event.target.value })}
+            />
+            <p className="text-xs text-muted-foreground">随话术保存，可用于续稿和问答。</p>
+          </div>
         </div>
-        <div className="space-y-2">
-          <Label htmlFor="script-reference-text">商品要素与参考资料</Label>
-          <Textarea
-            id="script-reference-text"
-            aria-label="商品要素与参考资料"
-            value={config.referenceText}
-            maxLength={12000}
-            disabled={busy}
-            className="min-h-36"
-            placeholder="产品名称、规格与适用人群、已确认的价格和优惠、常见问题与参考回答……"
-            onChange={event => update(accountId, { referenceText: event.target.value })}
-          />
-          <p className="text-xs text-muted-foreground">
-            与本话术一起保存；续稿和已启用资料引用的 AI 回复会使用这份资料，不会直接朗读。
-          </p>
-        </div>
-        <div className="flex flex-wrap items-center gap-3">
-          <APIKeyDialog type="chat" />
-          <AIModelInfo type="chat" />
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
+            <APIKeyDialog type="chat" />
+            <AIModelInfo type="chat" />
+          </div>
           {busy ? (
             <Button
               variant="outline"
@@ -200,37 +216,7 @@ export function ScriptGenerator() {
             </Button>
           )}
         </div>
-        <p className="text-xs text-muted-foreground">
-          使用 AI 助手的文本模型配置。文字生成与 TTS
-          配音分别配置；生成稿不会自动覆盖已保存话术或开始播放。
-        </p>
-        <div className="flex flex-wrap items-end gap-3">
-          {config.savedScripts.length > 0 && (
-            <div className="min-w-64 flex-1 space-y-2">
-              <Label htmlFor="script-library">打开已保存话术进行编辑（不改变本次播报）</Label>
-              <Select
-                disabled={busy}
-                value={config.scriptDraftId || undefined}
-                onValueChange={load}
-              >
-                <SelectTrigger id="script-library">
-                  <SelectValue placeholder="选择一份话术载入编辑器" />
-                </SelectTrigger>
-                <SelectContent>
-                  {config.savedScripts.map(script => (
-                    <SelectItem key={script.id} value={script.id}>
-                      {script.title} · {countScriptCharacters(script.content)} 字
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-          )}
-          <Button variant="outline" disabled={busy} onClick={newDraft}>
-            新建话术
-          </Button>
-        </div>
-        <div className="space-y-2">
+        <div className="space-y-2 border-t pt-4">
           <Label htmlFor="script-draft-title">话术名称</Label>
           <Input
             id="script-draft-title"
@@ -254,7 +240,7 @@ export function ScriptGenerator() {
             value={draft}
             readOnly={busy}
             maxLength={20000}
-            className="min-h-64"
+            className="min-h-52"
             placeholder="AI 生成的正文会逐步显示在这里，也可以直接粘贴或编辑已有话术。"
             onChange={event => update(accountId, { generatedScript: event.target.value })}
           />
@@ -280,6 +266,13 @@ export function ScriptGenerator() {
           >
             <Save className="h-4 w-4" />
             {config.scriptDraftId ? '保存修改' : '保存话术'}
+          </Button>
+          <Button
+            variant="secondary"
+            disabled={busy || !draft.trim() || !config.scriptDraftTitle.trim()}
+            onClick={() => save(false, true)}
+          >
+            保存并选用
           </Button>
           {config.scriptDraftId && (
             <Button

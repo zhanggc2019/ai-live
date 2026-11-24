@@ -11,6 +11,7 @@ import {
   ContextMenuTrigger,
 } from '@/components/ui/context-menu'
 import { Toaster } from '@/components/ui/toaster'
+import { UpdateDialog } from '@/components/update/UpdateDialog'
 import { useDevMode } from '@/hooks/useDevMode'
 import { Header } from './components/common/Header'
 import { VoiceStatusBar } from './components/common/VoiceStatusBar'
@@ -132,6 +133,7 @@ function App() {
         )}
       </ContextMenu>
       <Toaster />
+      <UpdateDialog />
     </>
   )
 }

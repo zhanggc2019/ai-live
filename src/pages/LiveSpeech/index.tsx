@@ -1,11 +1,12 @@
-import { Play, Volume2 } from 'lucide-react'
-import { Link } from 'react-router'
+import { Play, Square, Volume2 } from 'lucide-react'
+import { useEffect } from 'react'
+import { Link, useLocation } from 'react-router'
 import { IPC_CHANNELS } from 'shared/ipcChannels'
 import { findScriptTopicConflict } from 'shared/liveScript'
 import { splitSpeechText, TTS_PRESETS } from 'shared/voice'
 import { Title } from '@/components/common/Title'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Card, CardContent, CardDescription, CardHeader } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import {
@@ -29,8 +30,9 @@ import {
 import { ScriptGenerator } from './ScriptGenerator'
 import { VoicePicker } from './VoicePicker'
 
-/** 只从已保存的话术及其商品资料开始播报，后续讲解由 AI 持续供稿。 */
+/** 将文案编辑和当前账号的开播准备放在一个工作区。 */
 export default function LiveSpeech() {
+  const location = useLocation()
   const accountId = useAccounts(state => state.currentAccountId)
   useVoiceConfigStore(state => state.contexts[accountId])
   const config = getVoiceConfig(accountId)
@@ -45,8 +47,20 @@ export default function LiveSpeech() {
     selectedScript && findScriptTopicConflict(selectedScript, config.savedScripts)
   const seedScript = selectedScript?.content ?? ''
   const seed = splitSpeechText(seedScript)
+  const activeForAccount = runtime.accountId === accountId
+  const onAir = (runtime.running || runtime.preparing) && runtime.mode !== 'preview'
+  const canStart =
+    selectedScript &&
+    !topicConflict &&
+    (!onAir || (runtime.mode === 'local' && runtime.phase === 'idle'))
 
-  /** 开始播报或试听，并将即时校验错误呈现在界面。 */
+  useEffect(() => {
+    if (location.hash === '#broadcast-setup' || location.hash === '#script-studio') {
+      document.getElementById(location.hash.slice(1))?.scrollIntoView({ block: 'start' })
+    }
+  }, [location])
+
+  /** 开始播报或试听，并呈现即时校验错误。 */
   function run(action: () => void) {
     try {
       action()
@@ -55,20 +69,26 @@ export default function LiveSpeech() {
     }
   }
 
-  /** 切换已保存话术时停止旧会话；正文和资料由所选版本读取。 */
+  /** 切换话术时停止旧会话，并从最新存储读取刚保存的版本。 */
   function selectBroadcastScript(id: string) {
-    if (id === selectedScript?.id) return
-    const script = config.savedScripts.find(item => item.id === id)
-    if (!script) return
+    const current = getVoiceConfig(accountId)
+    if (id === current.selectedScriptId || !current.savedScripts.some(script => script.id === id))
+      return
     const active = useVoiceRuntime.getState()
     if (active.accountId === accountId && (active.running || active.preparing)) {
       stopVoiceSession(accountId)
-      toast.success('已停止上一份话术；请确认新话术后点击开始播报')
+      toast.success('已停止上一份话术，请确认新话术后点击开始播报')
     }
-    update(accountId, { selectedScriptId: script.id })
+    update(accountId, { selectedScriptId: id })
   }
 
-  /** 用本场音色试听一句讲解示例，不启动持续播报或预备队列。 */
+  /** 选中编辑器刚保存的话术，并将开播面板带入视野。 */
+  function useSavedScript(id: string) {
+    selectBroadcastScript(id)
+    document.getElementById('broadcast-setup')?.scrollIntoView({ block: 'start' })
+  }
+
+  /** 用本场音色试听一句讲解示例，不启动持续播报。 */
   async function auditionSelectedVoice() {
     try {
       const hasKey = await window.ipcRenderer.invoke(IPC_CHANNELS.tts.hasKey, config.provider)
@@ -83,32 +103,42 @@ export default function LiveSpeech() {
   }
 
   return (
-    <div className="container space-y-6 py-6">
-      <div className="flex flex-wrap items-center justify-between gap-4">
-        <Title title="直播话术" description="选择已保存的话术，AI 按它对应的商品资料持续供稿" />
-        <Button asChild variant="outline">
-          <Link to="/tts-settings">配置声音</Link>
+    <div className="@container mx-auto max-w-7xl space-y-5 pb-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <Title title="直播话术" description="生成文案、选择音色，然后开始播报。" />
+        <Button asChild variant="outline" className="@min-[850px]:hidden">
+          <Link to="#broadcast-setup">前往开播准备</Link>
         </Button>
       </div>
-      <Card id="broadcast-setup" className="border-primary/40 bg-primary/[0.03]">
-        <CardHeader>
-          <CardTitle className="text-lg">开播前确认 · 持续讲解</CardTitle>
-          <CardDescription>
-            所选话术播报一次；播放过程中根据剩余字数提前生成新段落，不会从头重放同一份话术。
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
-          <div className="space-y-4">
+      <div className="grid items-start gap-4 @min-[850px]:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)]">
+        <ScriptGenerator onUseScript={useSavedScript} />
+        <Card id="broadcast-setup" className="@container min-w-0 scroll-mt-4 shadow-none">
+          <CardHeader className="px-5 pt-5 pb-4">
+            <h2 className="text-lg font-semibold">开播准备</h2>
+            <CardDescription className="flex flex-wrap items-center gap-x-2">
+              <span className="flex items-center gap-2">
+                <span
+                  aria-hidden="true"
+                  className={`size-2 rounded-full ${connected ? 'bg-emerald-600' : 'bg-muted-foreground'}`}
+                />
+                {connected ? '已连接中控台 · 直播播报' : '未连接中控台 · 本机试听'}
+              </span>
+              {!connected && (
+                <Link to="/" className="text-primary underline underline-offset-4">
+                  连接中控台
+                </Link>
+              )}
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4 px-5 pb-5">
             <div className="space-y-2">
-              <Label htmlFor="selected-live-script" className="text-base font-semibold">
-                本次播报话术
-              </Label>
+              <Label htmlFor="selected-live-script">本次播报话术</Label>
               <Select
                 value={selectedScript?.id}
                 onValueChange={selectBroadcastScript}
                 disabled={!config.savedScripts.length}
               >
-                <SelectTrigger id="selected-live-script" className="w-full bg-background">
+                <SelectTrigger id="selected-live-script" className="w-full min-w-0">
                   <SelectValue placeholder="请选择已保存话术" />
                 </SelectTrigger>
                 <SelectContent>
@@ -121,13 +151,14 @@ export default function LiveSpeech() {
               </Select>
               {!config.savedScripts.length && (
                 <p className="text-xs text-muted-foreground">
-                  暂无已保存话术；请在下方编辑区新建并保存话术。
+                  先
+                  <Link to="#script-studio" className="text-primary underline underline-offset-4">
+                    生成或填写文案
+                  </Link>
+                  ，再保存并选用。
                 </p>
               )}
             </div>
-            <p className="text-xs text-muted-foreground">
-              每份话术的正文和商品资料一起保存。要修改内容，请在下方编辑区打开并保存。
-            </p>
             <VoicePicker
               accountId={accountId}
               provider={config.provider}
@@ -136,172 +167,143 @@ export default function LiveSpeech() {
               onPreview={() => void auditionSelectedVoice()}
               previewDisabled={runtime.running || runtime.preparing}
             />
-            <div className="space-y-2">
-              <Label htmlFor="prebuffer-seconds">开播前预备语音</Label>
-              <Select
-                value={String(config.prebufferSeconds)}
-                onValueChange={value => update(accountId, { prebufferSeconds: Number(value) })}
-              >
-                <SelectTrigger id="prebuffer-seconds" className="w-full bg-background">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="0">立即开始</SelectItem>
-                  <SelectItem value="15">约 15 秒</SelectItem>
-                  <SelectItem value="30">约 30 秒（推荐）</SelectItem>
-                  <SelectItem value="45">约 45 秒</SelectItem>
-                </SelectContent>
-              </Select>
-              <p className="text-xs text-muted-foreground">
-                按合成音频的实际播放时长准备；话术正文不足时先生成续稿。准备完成后自动开始播报。
-              </p>
-            </div>
-            <div className="flex items-center gap-3">
-              <Label htmlFor="speech-gap">句间停顿（秒）</Label>
-              <Input
-                id="speech-gap"
-                className="w-24"
-                type="number"
-                min={0}
-                max={30}
-                step={0.05}
-                value={config.gapMs / 1000}
-                onChange={event =>
-                  update(accountId, {
-                    gapMs: Math.round(
-                      Math.max(0, Math.min(30, Number(event.target.value) || 0)) * 1000,
-                    ),
-                  })
-                }
-              />
-            </div>
-          </div>
-          <div className="flex flex-col justify-between gap-4 rounded-lg border bg-background p-4">
-            <div className="space-y-2">
-              <p className="text-sm font-medium">即将播报的内容</p>
-              <p className="text-sm text-muted-foreground">
-                开场：{opening.length ? `${opening.length} 句，播放一次` : '未填写'}
-              </p>
-              <p className="text-sm text-muted-foreground">
-                话术正文：
-                {seed.length
-                  ? `${selectedScript?.title} · ${seed.length} 句 / ${seedScript.replace(/\s/g, '').length} 字`
-                  : '未选择或尚无正文'}
-              </p>
-              {selectedScript && (
-                <p className="text-sm text-muted-foreground">
+            {selectedScript && (
+              <div className="space-y-1 rounded-md bg-muted/60 p-3 text-xs text-muted-foreground">
+                <p className="break-words">
+                  话术正文：{selectedScript.title} · {seed.length} 句 /{' '}
+                  {seedScript.replace(/\s/g, '').length} 字
+                </p>
+                <p>
                   随话术保存的商品资料：
                   {(selectedScript.productIntro ?? '').length +
                     (selectedScript.referenceText ?? '').length}{' '}
                   字
                 </p>
-              )}
-              <p className="text-sm text-muted-foreground">
-                后续：结合所选话术的商品要素持续生成，每段字数参照正文。
+              </div>
+            )}
+            {topicConflict && (
+              <p className="text-sm text-destructive" role="alert">
+                《{selectedScript.title}》的正文多次提到《{topicConflict.title}
+                》的主题。请修改并保存正文后再播报。
               </p>
-              {topicConflict && (
-                <p className="text-sm text-destructive" role="alert">
-                  《{selectedScript.title}》的正文多次提到《{topicConflict.title}
-                  》的主题。请在下方编辑区打开这份话术，修改正文并保存后再播报。
+            )}
+            <div className="space-y-2">
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  className="flex-1"
+                  size="lg"
+                  disabled={!canStart}
+                  onClick={() =>
+                    run(() => startVoiceSession(accountId, connected ? 'live' : 'local'))
+                  }
+                >
+                  <Play />
+                  开始播报
+                </Button>
+                {activeForAccount && onAir && (
+                  <Button variant="outline" size="lg" onClick={() => stopVoiceSession(accountId)}>
+                    <Square />
+                    {runtime.preparing ? '取消准备' : '结束播报'}
+                  </Button>
+                )}
+              </div>
+              {activeForAccount && onAir && (
+                <p className="break-words text-sm font-medium text-primary" role="status">
+                  当前正在{runtime.preparing ? '准备' : '播报'}：{runtime.activeScriptTitle}
                 </p>
               )}
-              {runtime.accountId === accountId &&
-                (runtime.running || runtime.preparing) &&
-                runtime.mode !== 'preview' && (
-                  <p className="text-sm font-medium text-primary" role="status">
-                    当前正在{runtime.preparing ? '准备' : '播报'}：{runtime.activeScriptTitle}
-                  </p>
-                )}
-              {runtime.accountId === accountId && runtime.continuation.status !== 'idle' && (
+              {activeForAccount && (runtime.preparing || runtime.preparationError) && (
+                <p className="text-xs text-muted-foreground" role="status">
+                  {runtime.preparationError ||
+                    `正在预备语音：${runtime.preparedSeconds.toFixed(1)} / 约 ${runtime.preparationTargetSeconds} 秒`}
+                </p>
+              )}
+              {activeForAccount && runtime.continuation.status !== 'idle' && (
                 <p className="text-xs text-muted-foreground" role="status">
                   {runtime.continuation.error ||
                     `已生成 ${runtime.continuation.generatedSegments} 段 · ${runtime.continuation.status === 'generating' || runtime.continuation.status === 'retrying' ? '正在准备下一段' : '等待合适字数继续供稿'}`}
                 </p>
               )}
-              {runtime.accountId === accountId &&
-                (runtime.preparing || runtime.preparationError) && (
-                  <p className="text-xs text-muted-foreground" role="status">
-                    {runtime.preparationError ||
-                      `正在预备语音：${runtime.preparedSeconds.toFixed(1)} / 约 ${runtime.preparationTargetSeconds} 秒`}
-                  </p>
-                )}
-            </div>
-            <div className="space-y-2">
-              <Button
-                className="w-full"
-                size="lg"
-                disabled={
-                  !selectedScript ||
-                  Boolean(topicConflict) ||
-                  ((runtime.running || runtime.preparing) &&
-                    runtime.mode !== 'preview' &&
-                    !(runtime.mode === 'local' && runtime.phase === 'idle'))
-                }
-                onClick={() =>
-                  run(() => startVoiceSession(accountId, connected ? 'live' : 'local'))
-                }
-              >
-                <Play className="h-4 w-4" />
-                开始播报
-              </Button>
-              {runtime.accountId === accountId && runtime.preparing && (
-                <Button
-                  className="w-full"
-                  variant="outline"
-                  onClick={() => stopVoiceSession(accountId)}
-                >
-                  取消准备
-                </Button>
-              )}
-              <p className="text-xs text-muted-foreground">
-                {connected
-                  ? '已连接中控台：播报将关联直播问答。'
-                  : '未连接中控台：开始后在本机试听。'}
-                修改并保存话术后会在下一次开始时生效；切换话术会先停止旧播报。
+              <p className="text-xs leading-relaxed text-muted-foreground">
+                开场和所选话术各播一次，后续由 AI 按商品资料续稿。
               </p>
             </div>
-          </div>
-        </CardContent>
-      </Card>
-      <div className="grid gap-6">
-        <Card>
-          <CardHeader>
-            <CardTitle>开场介绍</CardTitle>
-            <CardDescription>开始后按顺序朗读一次，共 {opening.length} 句</CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            <Label htmlFor="opening-script">开场介绍</Label>
-            <Textarea
-              id="opening-script"
-              value={config.openingScript}
-              maxLength={20000}
-              className="min-h-48"
-              placeholder="欢迎来到直播间。今天给大家介绍……"
-              onChange={event => update(accountId, { openingScript: event.target.value })}
-            />
-            <Button
-              variant="outline"
-              disabled={!opening.length}
-              onClick={() => run(() => previewVoice(accountId, config.openingScript))}
-            >
-              <Volume2 className="h-4 w-4" />
-              试听开场
-            </Button>
+            <div className="space-y-3 border-t pt-4">
+              <div className="grid gap-3 @min-[260px]:grid-cols-2">
+                <div className="min-w-0 space-y-2">
+                  <Label htmlFor="prebuffer-seconds">开播前预备语音</Label>
+                  <Select
+                    value={String(config.prebufferSeconds)}
+                    onValueChange={value => update(accountId, { prebufferSeconds: Number(value) })}
+                  >
+                    <SelectTrigger id="prebuffer-seconds" className="w-full">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="0">立即开始</SelectItem>
+                      <SelectItem value="15">约 15 秒</SelectItem>
+                      <SelectItem value="30">约 30 秒（推荐）</SelectItem>
+                      <SelectItem value="45">约 45 秒</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="min-w-0 space-y-2">
+                  <Label htmlFor="speech-gap">句间停顿（秒）</Label>
+                  <Input
+                    id="speech-gap"
+                    type="number"
+                    min={0}
+                    max={30}
+                    step={0.05}
+                    value={config.gapMs / 1000}
+                    onChange={event =>
+                      update(accountId, {
+                        gapMs: Math.round(
+                          Math.max(0, Math.min(30, Number(event.target.value) || 0)) * 1000,
+                        ),
+                      })
+                    }
+                  />
+                </div>
+              </div>
+              <div className="space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <Label htmlFor="opening-script">开场介绍</Label>
+                  <span className="text-xs text-muted-foreground">{opening.length} 句 · 可选</span>
+                </div>
+                <Textarea
+                  id="opening-script"
+                  value={config.openingScript}
+                  maxLength={20000}
+                  className="min-h-24"
+                  placeholder="欢迎来到直播间。今天给大家介绍……"
+                  onChange={event => update(accountId, { openingScript: event.target.value })}
+                />
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={!opening.length}
+                  onClick={() => run(() => previewVoice(accountId, config.openingScript))}
+                >
+                  <Volume2 />
+                  试听开场
+                </Button>
+              </div>
+            </div>
+            {connected && (
+              <p className="text-xs text-muted-foreground">
+                直播问答可在
+                <Link
+                  to="/auto-reply/settings"
+                  className="text-primary underline underline-offset-4"
+                >
+                  自动回复设置
+                </Link>
+                启用语音。
+              </p>
+            )}
           </CardContent>
         </Card>
-      </div>
-      <ScriptGenerator />
-      <div className="rounded-lg border bg-muted/30 p-4 text-sm text-muted-foreground space-y-1">
-        <p>
-          开场和所选话术各播放一次，后续新段落由 AI 持续生成；无需开真实直播间，也能在本机试听。
-        </p>
-        <p>
-          观众问答需先连接中控台，再到{' '}
-          <Link to="/auto-reply/settings" className="text-primary underline">
-            自动回复设置
-          </Link>{' '}
-          启用 AI、自动发送及语音方式，并开始评论监听和回复任务。
-        </p>
       </div>
     </div>
   )

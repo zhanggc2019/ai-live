@@ -59,7 +59,7 @@ try {
   const errors = []
   page.on('pageerror', error => errors.push(error.message))
   await page.addInitScript(
-    ({ audio, prebufferAudio }) => {
+    ({ audio, prebufferAudio, testUpdates }) => {
       const listeners = new Map()
       const keys = new Set()
       const cancelledScripts = new Set()
@@ -91,6 +91,7 @@ try {
         synthesisDelay: 120,
         continuations: [],
         clones: [],
+        updateCalls: [],
       }
       const originalPlay = HTMLMediaElement.prototype.play
       /** 记录真实浏览器播放器的倍率和音高开关，仍然解码并播放测试 WAV。 */
@@ -116,6 +117,27 @@ try {
         send() {},
         /** 模拟网络合成结果，其他行为保留应用前端原有逻辑。 */
         async invoke(channel, ...args) {
+          if (channel === 'updater:checkUpdate') {
+            if (!testUpdates) return undefined
+            window.voiceTest.updateCalls.push(channel)
+            return {
+              currentVersion: '1.0.2',
+              latestVersion: '1.0.3',
+              releaseNote: '### 更新内容\n\n- 优化本场讲解。',
+              canInstallInApp: true,
+            }
+          }
+          if (channel === 'updater:startDownload') {
+            window.voiceTest.updateCalls.push(args[0])
+            return new Promise(resolve => {
+              window.voiceTest.finishUpdate = resolve
+              window.emitTestEvent('updater:downloadProgress', { percent: 45 })
+            })
+          }
+          if (channel === 'updater:quitAndInstall') {
+            window.voiceTest.updateCalls.push(channel)
+            return
+          }
           if (channel === 'tasks:aiChat:testApiKey') {
             window.voiceTest.keyChecks.push(args[0])
             return { success: true }
@@ -217,12 +239,37 @@ try {
     {
       audio: makeSilentWav(),
       prebufferAudio: makeSilentWav(10),
+      testUpdates: process.argv.includes('--updates'),
     },
   )
   await page.goto(`http://127.0.0.1:${server.address().port}/#/live-speech`)
   await page.waitForLoadState('networkidle')
   await page.screenshot({ path: 'test-results/voice-initial.png' })
-  if (process.argv.includes('--clone')) {
+  if (process.argv.includes('--updates')) {
+    const update = page.getByRole('dialog')
+    await update.getByRole('heading', { name: '星河 AI 直播 v1.0.3' }).waitFor()
+    await update.getByText('优化本场讲解。', { exact: true }).waitFor()
+    await update.getByRole('button', { name: '下载更新', exact: true }).click()
+    await update.getByText('45%', { exact: true }).waitFor()
+    await update.getByRole('button', { name: '关闭', exact: true }).click()
+    await page.locator('nav a').filter({ hasText: '应用设置' }).click()
+    await page.getByRole('button', { name: '查看更新进度', exact: true }).click()
+    await update.getByText('45%', { exact: true }).waitFor()
+    await page.evaluate(() => window.voiceTest.finishUpdate())
+    await update.getByRole('button', { name: '重启并安装', exact: true }).click()
+    await page.evaluate(() => window.emitTestEvent('updater:installError', '安装器暂时无法启动'))
+    await update.getByRole('alert').getByText('安装器暂时无法启动').waitFor()
+    await update.getByRole('button', { name: '重启并安装', exact: true }).waitFor()
+    assert.deepEqual(await page.evaluate(() => window.voiceTest.updateCalls), [
+      'updater:checkUpdate',
+      '1.0.3',
+      'updater:quitAndInstall',
+    ])
+    assert.deepEqual(errors, [])
+    console.log(
+      'UPDATE UI CHECKS PASSED: startup notes, download progress, reopen, explicit install',
+    )
+  } else if (process.argv.includes('--clone')) {
     await page.getByRole('link', { name: '音色克隆', exact: true }).click()
     const upload = page.getByRole('button', { name: '上传并克隆音色', exact: true })
     const file = page.locator('#clone-voice-file')
@@ -677,10 +724,22 @@ try {
       await page.getByLabel('话术正文（可编辑）', { exact: true }).getAttribute('readonly'),
       null,
     )
+    await page.getByLabel('话术名称', { exact: true }).fill('水杯夜间版')
+    await page.getByLabel('话术正文（可编辑）', { exact: true }).fill('夜间介绍这款水杯。')
+    await page.getByRole('button', { name: '保存并选用', exact: true }).click()
+    assert.equal(await page.locator('#selected-live-script').innerText(), '水杯夜间版')
+    assert.equal(await page.getByRole('button', { name: '停止语音', exact: true }).count(), 0)
     await page.locator('main').evaluate(element => {
       element.scrollTop = 0
     })
     await page.screenshot({ path: 'test-results/script-generator.png' })
+    await page.setViewportSize({ width: 1024, height: 768 })
+    await page.getByRole('link', { name: '前往开播准备', exact: true }).click()
+    await page.getByRole('heading', { name: '开播准备', exact: true }).waitFor()
+    const mainBox = await page.locator('main').boundingBox()
+    const broadcastBox = await page.locator('#broadcast-setup').boundingBox()
+    assert.ok(mainBox && broadcastBox && broadcastBox.y < mainBox.y + mainBox.height)
+    await page.screenshot({ path: 'test-results/script-broadcast-narrow.png' })
     assert.deepEqual(errors, [])
     console.log(
       'SCRIPT UI CHECKS PASSED: streaming, editing, saving, save-as, reselect after reload, cancellation',
@@ -912,6 +971,7 @@ try {
     await page.screenshot({ path: 'test-results/live-speech.png' })
     await page.locator('nav a').filter({ hasText: '打开中控台' }).click()
     await page.getByRole('button', { name: '连接直播控制台', exact: true }).click()
+    await page.getByRole('link', { name: '去开播准备', exact: true }).waitFor()
     await page.getByRole('button', { name: '断开连接', exact: true }).waitFor()
     await page.locator('nav a').filter({ hasText: '直播话术' }).click()
     await page.getByRole('button', { name: '开始播报', exact: true }).click()

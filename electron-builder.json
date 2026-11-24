@@ -8,12 +8,22 @@
   },
   "electronLanguages": ["zh-CN", "en-US"],
   "files": ["dist-electron", "dist"],
+  "publish": {
+    "provider": "github",
+    "owner": "zhanggc2019",
+    "repo": "ai-live",
+    "private": false
+  },
   "mac": {
-    "artifactName": "${productName}_${version}_macos_${arch}.${ext}",
+    "artifactName": "${name}_${version}_macos_${arch}.${ext}",
     "target": [
       {
         "target": "dmg",
-        "arch": ["x64", "arm64"]
+        "arch": ["universal"]
+      },
+      {
+        "target": "zip",
+        "arch": ["universal"]
       }
     ],
     "icon": "public/favicon.png"
@@ -26,7 +36,7 @@
       }
     ],
     "icon": "public/favicon.ico",
-    "artifactName": "${productName}_${version}_windows_${arch}.${ext}"
+    "artifactName": "${name}_${version}_windows_${arch}.${ext}"
   },
   "nsis": {
     "oneClick": false,

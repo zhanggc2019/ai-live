@@ -1,30 +1,23 @@
 import React from 'react'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 
 const instructions = [
-  '选择平台并点击"连接直播控制台"按钮，等待登录',
-  '登录成功后，即可使用自动发言和自动弹窗功能',
-  '自动回复功能目前仅对抖音小店和巨量百应开放',
+  '选择平台并连接，在浏览器中登录对应账号。',
+  '完成连接后，进入开播准备选择话术和音色，也可使用当前平台支持的互动功能。',
 ]
 
+/** 显示连接前后的操作顺序。 */
 const InstructionsCard = React.memo(() => (
-  <Card>
-    <CardHeader>
-      <CardTitle>使用说明</CardTitle>
-      <CardDescription>了解如何使用直播控制台</CardDescription>
+  <Card className="shadow-none">
+    <CardHeader className="px-5 pt-5 pb-4">
+      <CardTitle>连接步骤</CardTitle>
     </CardHeader>
-    <CardContent>
-      <div className="space-y-4">
-        {instructions.map((instruction, index) => (
-          // biome-ignore lint/suspicious/noArrayIndexKey: 下标无妨
-          <div className="flex gap-3" key={index}>
-            <div className="w-6 h-6 rounded-full bg-primary/10 flex items-center justify-center shrink-0">
-              <span className="text-sm font-medium text-primary">{index + 1}</span>
-            </div>
-            <p className="text-sm text-muted-foreground leading-6">{instruction}</p>
-          </div>
+    <CardContent className="px-5 pb-5">
+      <ol className="list-decimal space-y-2 pl-5 text-sm text-muted-foreground">
+        {instructions.map(instruction => (
+          <li key={instruction}>{instruction}</li>
         ))}
-      </div>
+      </ol>
     </CardContent>
   </Card>
 ))

@@ -5,6 +5,7 @@ import { AccountSetting } from '@/pages/SettingsPage/components/AccountSetting'
 import { BrowserSetting } from '@/pages/SettingsPage/components/BrowserSetting'
 import { DevSetting } from '@/pages/SettingsPage/components/DevSetting'
 import { OtherSetting } from '@/pages/SettingsPage/components/OtherSetting'
+import { UpdateSetting } from '@/pages/SettingsPage/components/UpdateSetting'
 
 export default function Settings() {
   const location = useLocation()
@@ -29,6 +30,7 @@ export default function Settings() {
         <BrowserSetting />
         <AccountSetting />
         <DevSetting />
+        <UpdateSetting />
         <OtherSetting />
       </div>
     </div>

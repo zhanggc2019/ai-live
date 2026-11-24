@@ -1,81 +1,54 @@
 import { RefreshCw } from 'lucide-react'
-import { useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Label } from '@/components/ui/label'
-import { Separator } from '@/components/ui/separator'
 import { Switch } from '@/components/ui/switch'
+import { useToast } from '@/hooks/useToast'
 import { useUpdateConfigStore, useUpdateStore } from '@/hooks/useUpdate'
 import { version } from '../../../../package.json'
 
+/** 提供手动查询和查看已下载更新的入口，并保存启动检查偏好。 */
 export function UpdateSetting() {
   const { enableAutoCheckUpdate, setEnableAutoCheckUpdate } = useUpdateConfigStore()
-  const updateStatus = useUpdateStore.use.status()
-  const checkUpdateManually = useUpdateStore.use.checkUpdateManually()
-  const [isUpToDate, setIsUpToDate] = useState(false)
+  const status = useUpdateStore(state => state.status)
+  const check = useUpdateStore(state => state.check)
+  const { toast } = useToast()
 
-  const checkUpdate = async () => {
-    const result = await checkUpdateManually()
-    if (result) {
-      setIsUpToDate(result.upToDate)
-    }
+  /** 有更新时由全局对话框显示详情，最新版本用轻量反馈提示。 */
+  async function checkUpdate() {
+    if (await check()) toast.success('已是最新版本')
   }
 
   return (
     <Card id="update-section">
       <CardHeader>
         <CardTitle>软件更新</CardTitle>
-        <CardDescription>检查并安装最新版本的应用程序</CardDescription>
+        <CardDescription>当前版本 v{version} · GitHub Releases</CardDescription>
       </CardHeader>
-      <CardContent className="space-y-6">
-        <div className="space-y-4">
-          {/* 手动更新 */}
-          <div className="flex items-center justify-between">
-            <div className="space-y-1">
-              <Label>更新源</Label>
-              <p className="text-sm text-muted-foreground">选择合适的更新源以获取最新版本</p>
-            </div>
-            <div className="flex items-center gap-3">
-              <Button
-                variant="outline"
-                disabled={updateStatus === 'checking'}
-                onClick={checkUpdate}
-                size="sm"
-              >
-                {updateStatus === 'checking' ? (
-                  <>
-                    <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
-                    检查更新中
-                  </>
-                ) : (
-                  <>
-                    <RefreshCw className="mr-2 h-4 w-4" />
-                    {isUpToDate ? '已是最新版本' : '检查更新'}
-                  </>
-                )}
-              </Button>
-            </div>
-          </div>
-        </div>
-
-        <Separator className="my-6" />
-
-        <div className="flex justify-between items-center ">
+      <CardContent className="space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="space-y-1">
-            <Label>有新版本时弹窗提示</Label>
-            <p className="text-sm text-muted-foreground">弹窗显示新版本更新了什么内容</p>
+            <Label htmlFor="software-auto-update">启动时检查更新</Label>
+            <p className="text-sm text-muted-foreground">有新版本时显示更新日志</p>
           </div>
-          <Switch checked={enableAutoCheckUpdate} onCheckedChange={setEnableAutoCheckUpdate} />
+          <Switch
+            id="software-auto-update"
+            checked={enableAutoCheckUpdate}
+            onCheckedChange={setEnableAutoCheckUpdate}
+          />
         </div>
-
-        <Separator />
-
-        <div className="flex items-center justify-between">
-          <div className="space-y-1">
-            <h4 className="text-sm font-medium leading-none">当前版本</h4>
-            <p className="text-sm text-muted-foreground">{version}</p>
-          </div>
-        </div>
+        <Button
+          variant="outline"
+          disabled={status === 'checking'}
+          onClick={() => void checkUpdate()}
+        >
+          <RefreshCw className={status === 'checking' ? 'animate-spin' : undefined} />
+          {status === 'checking'
+            ? '检查中…'
+            : ['downloading', 'ready', 'installing'].includes(status)
+              ? '查看更新进度'
+              : '检查更新'}
+        </Button>
       </CardContent>
     </Card>
   )

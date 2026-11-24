@@ -5,7 +5,7 @@
   <p> 抖音小店/巨量百应/抖音团购/小红书/视频号/快手小店/淘宝直播小工具 </p>
   <br>
 
-[![GitHub Release][github release badge]](https://github.com/qiutongxue/oba-live-tool/releases/latest)
+[![GitHub Release][github release badge]](https://github.com/zhanggc2019/ai-live/releases/latest)
 ![GitHub][github license badge]
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/qiutongxue/oba-live-tool)
  
@@ -45,14 +45,14 @@
 
 ### 下载安装
 
-访问 [Releases](https://github.com/qiutongxue/oba-live-tool/releases/latest) 页面下载最新版本安装包
+从 [星河 AI 直播 Releases](https://github.com/zhanggc2019/ai-live/releases/latest) 下载最新安装包。
 
 ### 源码构建
 
 ```bash
-git clone https://github.com/qiutongxue/oba-live-tool.git
-cd oba-live-tool
-pnpm install
+git clone https://github.com/zhanggc2019/ai-live.git
+cd ai-live
+pnpm install --no-frozen-lockfile
 pnpm build
 # 构建在项目根目录的 /release 文件夹下
 ```
@@ -237,16 +237,15 @@ AI 助手只支持文本对话，在使用 AI 助手功能前，请先设置好�
 
 #### 软件更新
 
-当前暂时只通过 Github Release 分发。你可以选择或自定义加速代理源，当然，也只是普通的代理加速。
+在「应用设置 → 软件更新」可以手动检查更新，也可以启用启动时检查。客户端会显示新版本的更新日志，确认后下载，下载完成后选择重启安装。
 
-设置自定义代理加速方式如下：
+Windows x64 支持应用内安装。macOS 发行包配置了 Apple Developer ID 签名时支持应用内安装。客户端会为未签名的 macOS 发行版提供 DMG 下载入口。此前安装的版本需要从 GitHub 安装一次新版，之后可使用应用内更新。
 
-1. 找到一个能够代理加速 github release 的站点，如 `gh-proxy.com`
-2. 查看站点提供的加速地址，如下载 1.5.20-windows-x64 版本的地址可以是 `https://gh-proxy.org/https://github.com/qiutongxue/oba-live-tool/releases/download/v1.5.20/oba-live-tool_1.5.20_windows_x64.exe`
-3. 把 `https://github.com/……` 及后面的链接删除，保留前缀 `https://gh-proxy.org/`
-4. 将前缀地址复制到自定义更新源输入框中
+#### 发布新版本
 
-亲测：Github 绝对可用。`gh-proxy.com` 偶尔可用。其余的github代理基本都不可用。
+更新 `package.json` 的版本号和 `CHANGELOG.md` 中对应的标题，例如 `## v1.0.2`。提交后推送同名版本标签，GitHub Actions 会完成打包、校验并发布。缺少对应日志时，GitHub 会根据提交记录生成发行说明。带预发布后缀的标签会发布为预发行版。
+
+macOS 自动更新使用 Actions Secrets 中的 `CSC_LINK` 和 `CSC_KEY_PASSWORD` 导入签名证书。也可以配置 `APPLE_ID`、`APPLE_APP_SPECIFIC_PASSWORD` 和 `APPLE_TEAM_ID` 完成 Apple 公证。
 
 #### 开发者模式
 
@@ -262,7 +261,7 @@ AI 助手只支持文本对话，在使用 AI 助手功能前，请先设置好�
 
 <!-- badage -->
 
-[github release badge]: https://img.shields.io/github/v/release/qiutongxue/oba-live-tool?style=flat&logo=github&labelColor=%2324292e&color=%231a7f37
+[github release badge]: https://img.shields.io/github/v/release/zhanggc2019/ai-live?style=flat&logo=github&labelColor=%2324292e&color=%231a7f37
 
 
 [github license badge]: https://img.shields.io/badge/license-MIT-5c6bc0?style=flat&labelColor=24292e

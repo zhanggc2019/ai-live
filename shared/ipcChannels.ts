@@ -71,11 +71,9 @@ export const IPC_CHANNELS = {
   },
   updater: {
     checkUpdate: 'updater:checkUpdate',
-    updateAvailable: 'updater:updateAvailable',
     startDownload: 'updater:startDownload',
     downloadProgress: 'updater:downloadProgress',
-    updateError: 'updater:updateError',
-    updateDownloaded: 'updater:updateDownloaded',
+    installError: 'updater:installError',
     quitAndInstall: 'updater:quitAndInstall',
   },
   account: {
@@ -84,7 +82,6 @@ export const IPC_CHANNELS = {
   log: 'log',
   app: {
     openLogFolder: 'app:openLogFolder',
-    notifyUpdate: 'app:notifyUpdate',
     openExternal: 'app:openExternal',
     getProviders: 'app:getProviders',
     providersUpdated: 'app:providersUpdated',

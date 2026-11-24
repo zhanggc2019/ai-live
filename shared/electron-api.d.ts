@@ -1,5 +1,6 @@
 import type { LogMessage } from 'electron-log'
-import type { ProgressInfo, UpdateDownloadedEvent } from 'electron-updater'
+import type { ProgressInfo } from 'electron-updater'
+import type { AppUpdate } from './appUpdate'
 import { IPC_CHANNELS } from './ipcChannels'
 import type { LiveScriptProgress, LiveScriptResult, ScriptRequest } from './liveScript'
 import type {
@@ -119,15 +120,11 @@ export interface IpcChannels {
   [IPC_CHANNELS.tasks.redPacket.send]: (accountId: string, duration: string) => boolean
 
   // Updater
-  [IPC_CHANNELS.updater.checkUpdate]: () => Promise<
-    { latestVersion: string; currentVersion: string; releaseNote?: string } | undefined
-  >
-  [IPC_CHANNELS.updater.startDownload]: (source: string) => void
+  [IPC_CHANNELS.updater.checkUpdate]: () => AppUpdate | undefined
+  [IPC_CHANNELS.updater.startDownload]: (version: string) => void
   [IPC_CHANNELS.updater.quitAndInstall]: () => void
-  [IPC_CHANNELS.updater.updateAvailable]: (info: VersionInfo) => void
-  [IPC_CHANNELS.updater.updateError]: (error: ErrorType) => void
   [IPC_CHANNELS.updater.downloadProgress]: (progress: ProgressInfo) => void
-  [IPC_CHANNELS.updater.updateDownloaded]: (event?: UpdateDownloadedEvent) => void
+  [IPC_CHANNELS.updater.installError]: (message: string) => void
 
   // Chrome
   [IPC_CHANNELS.chrome.selectPath]: () => string | null
@@ -139,11 +136,6 @@ export interface IpcChannels {
   // App
   [IPC_CHANNELS.app.openLogFolder]: () => void
   [IPC_CHANNELS.app.openExternal]: (url: string) => void
-  [IPC_CHANNELS.app.notifyUpdate]: (arg: {
-    currentVersion: string
-    latestVersion: string
-    releaseNote?: string
-  }) => void
   [IPC_CHANNELS.app.getProviders]: () => Record<string, ProviderInfo>
   [IPC_CHANNELS.app.providersUpdated]: (providers: Record<string, ProviderInfo>) => void
 

@@ -151,8 +151,11 @@ export function VoicePicker({
             : currentCatalog.status || '已读取当前身份可用音色。'
           : provider === 'openai-compatible'
             ? '兼容厂商没有统一的音色目录，请在音色克隆页面填写 Voice ID。'
-            : '切换后将在下一次开始播报时生效。'}{' '}
-        <Link to="/tts-settings" className="text-primary underline">
+            : '音色切换在下次播报时生效。'}{' '}
+        <Link
+          to="/tts-settings"
+          className="whitespace-nowrap text-primary underline underline-offset-4"
+        >
           配置声音
         </Link>
       </p>

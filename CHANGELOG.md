@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.0.2
+
+- 将文案生成、话术编辑与开播准备整合到直播话术页面，支持保存后直接选用。
+- 优化直播中控台连接入口，连接后可直接进入开播准备。
+- 客户端启动时可检查 GitHub 正式发行版，显示更新日志，并支持在 Windows 应用内下载和安装。
+
 ## v1.6.3
 
 [compare changes](https://github.com/qiutongxue/oba-live-tool/compare/v1.6.1...v1.6.3)
