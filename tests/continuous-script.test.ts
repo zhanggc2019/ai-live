@@ -52,10 +52,11 @@ async function until(check: () => boolean): Promise<void> {
   }
 }
 
-test('续稿长度接近底稿，短稿立即预备、长稿在剩余字数较多时预备', () => {
+test('长底稿按较短批次续稿，仍保留原有提前供稿时机', () => {
   assert.equal(continuationTarget('短稿'), 400)
-  assert.equal(continuationTarget('介绍'.repeat(800)), 1600)
-  assert.equal(continuationTarget('长稿'.repeat(3000)), 4000)
+  assert.equal(continuationTarget('介绍'.repeat(400)), 800)
+  assert.equal(continuationTarget('介绍'.repeat(800)), 1000)
+  assert.equal(continuationTarget('长稿'.repeat(3000)), 1000)
   assert.equal(continuationThreshold(400), 400)
   assert.equal(continuationThreshold(2500), 1200)
 })
@@ -68,21 +69,29 @@ test('续稿提示词隔离商品事实、底稿与最近内容，并拒绝不�
     provider: 'test',
     model: 'm',
     apiKey: 'k',
-    seedScript: '底稿正文。',
+    seedScript: '先介绍这只杯子。你平时出门会带水吗？',
     productIntro: '容量500毫升。',
     referenceText: '价格未提供。',
     requirements: '温和讲解',
     theme: '使用场景',
     recentThemes: ['产品细节'],
-    recentSamples: ['最近说过的片段。'],
+    recentSamples: ['更早一段的旧句子。', '最近说过的片段。刚才说到随手拿取。你平时把杯子放哪儿？'],
     targetCharacters: 1200,
     segmentIndex: 2,
   }
   const messages = buildContinuationScriptMessages(request)
   assert.match(messages[0].content, /1200/)
   assert.match(messages[0].content, /不要复述/)
-  assert.match(messages[1].content, /容量500毫升/)
-  assert.match(messages[1].content, /最近说过的片段/)
+  assert.match(messages[0].content, /长短句/)
+  assert.match(messages[0].content, /两三句/)
+  assert.match(messages[0].content, /上一段结尾/)
+  assert.match(messages[0].content, /不得假装看到弹幕/)
+  const context = JSON.parse(messages[1].content)
+  assert.equal(context.已确认的商品要素, '容量500毫升。')
+  assert.equal(context.上一段结尾, '刚才说到随手拿取。你平时把杯子放哪儿？')
+  assert.deepEqual(context.近期段落片段_请避免复述, request.recentSamples)
+  const firstContinuation = buildContinuationScriptMessages({ ...request, recentSamples: [] })
+  assert.equal(JSON.parse(firstContinuation[1].content).上一段结尾, request.seedScript)
   assert.throws(() => buildContinuationScriptMessages({ ...request, targetCharacters: 200 }))
 })
 

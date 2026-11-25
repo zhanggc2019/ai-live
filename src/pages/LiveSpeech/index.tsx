@@ -1,4 +1,4 @@
-import { Play, Square, Volume2 } from 'lucide-react'
+import { History, Play, Square, Volume2 } from 'lucide-react'
 import { useEffect } from 'react'
 import { Link, useLocation } from 'react-router'
 import { IPC_CHANNELS } from 'shared/ipcChannels'
@@ -21,6 +21,7 @@ import { useAccounts } from '@/hooks/useAccounts'
 import { useCurrentLiveControl } from '@/hooks/useLiveControl'
 import { useToast } from '@/hooks/useToast'
 import { getVoiceConfig, useVoiceConfigStore } from '@/hooks/useVoiceConfig'
+import { useVoiceHistoryStatus } from '@/services/voice/history'
 import {
   previewVoice,
   startVoiceSession,
@@ -40,6 +41,9 @@ export default function LiveSpeech() {
   const updateProvider = useVoiceConfigStore(state => state.updateProvider)
   const connected = useCurrentLiveControl(state => state.isConnected === 'connected')
   const runtime = useVoiceRuntime()
+  const historyError = useVoiceHistoryStatus(state =>
+    state.error?.accountId === accountId ? state.error.message : undefined,
+  )
   const { toast } = useToast()
   const opening = splitSpeechText(config.openingScript)
   const selectedScript = config.savedScripts.find(script => script.id === config.selectedScriptId)
@@ -106,10 +110,23 @@ export default function LiveSpeech() {
     <div className="@container mx-auto max-w-7xl space-y-5 pb-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <Title title="直播话术" description="生成文案、选择音色，然后开始播报。" />
-        <Button asChild variant="outline" className="@min-[850px]:hidden">
-          <Link to="#broadcast-setup">前往开播准备</Link>
-        </Button>
+        <div className="flex flex-wrap gap-2">
+          <Button asChild variant="outline" className="@min-[850px]:hidden">
+            <Link to="#broadcast-setup">前往开播准备</Link>
+          </Button>
+          <Button asChild variant="outline">
+            <Link to="/live-speech/history">
+              <History />
+              播报历史
+            </Link>
+          </Button>
+        </div>
       </div>
+      {historyError && (
+        <p role="alert" className="text-sm text-destructive">
+          {historyError}
+        </p>
+      )}
       <div className="grid items-start gap-4 @min-[850px]:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)]">
         <ScriptGenerator onUseScript={useSavedScript} />
         <Card id="broadcast-setup" className="@container min-w-0 scroll-mt-4 shadow-none">
@@ -208,21 +225,21 @@ export default function LiveSpeech() {
                 )}
               </div>
               {activeForAccount && onAir && (
-                <p className="break-words text-sm font-medium text-primary" role="status">
+                <output className="block break-words text-sm font-medium text-primary">
                   当前正在{runtime.preparing ? '准备' : '播报'}：{runtime.activeScriptTitle}
-                </p>
+                </output>
               )}
               {activeForAccount && (runtime.preparing || runtime.preparationError) && (
-                <p className="text-xs text-muted-foreground" role="status">
+                <output className="block text-xs text-muted-foreground">
                   {runtime.preparationError ||
                     `正在预备语音：${runtime.preparedSeconds.toFixed(1)} / 约 ${runtime.preparationTargetSeconds} 秒`}
-                </p>
+                </output>
               )}
               {activeForAccount && runtime.continuation.status !== 'idle' && (
-                <p className="text-xs text-muted-foreground" role="status">
+                <output className="block text-xs text-muted-foreground">
                   {runtime.continuation.error ||
                     `已生成 ${runtime.continuation.generatedSegments} 段 · ${runtime.continuation.status === 'generating' || runtime.continuation.status === 'retrying' ? '正在准备下一段' : '等待合适字数继续供稿'}`}
-                </p>
+                </output>
               )}
               <p className="text-xs leading-relaxed text-muted-foreground">
                 开场和所选话术各播一次，后续由 AI 按商品资料续稿。

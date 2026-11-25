@@ -13,6 +13,7 @@ import { EVENTS, eventEmitter } from '@/utils/events'
 import { playbackDuration } from './audioDuration'
 import { prepareAudioBuffer } from './audioPrebuffer'
 import { ContinuousScriptController, type ContinuousScriptState } from './continuousScript'
+import { appendVoiceHistory, useVoiceHistoryStatus, type VoiceHistorySession } from './history'
 import { VoiceQueue, type VoiceQueueState } from './VoiceQueue'
 
 interface VoiceRuntimeState extends VoiceQueueState {
@@ -31,6 +32,7 @@ interface VoiceRuntimeState extends VoiceQueueState {
 
 interface PreparedSpeech extends SpeechAudio, SpeechPacingPlan {
   playbackRate: number
+  synthesisMs: number
 }
 
 export const useVoiceRuntime = create<VoiceRuntimeState>(() => ({
@@ -61,12 +63,15 @@ let sessionId = 0
 let preparationController: AbortController | null = null
 let stagingSentences: string[] | null = null
 let startingQueue = false
+let historySession: VoiceHistorySession | null = null
 
 /** 将主进程音频交给独立 Audio 元素，输出到指定设备并在停止时释放资源。 */
-async function playAudio(data: PreparedSpeech, signal: AbortSignal): Promise<void> {
+async function playAudio(data: PreparedSpeech, signal: AbortSignal, text: string): Promise<void> {
   signal.throwIfAborted()
   const bytes = Uint8Array.from(atob(data.base64), char => char.charCodeAt(0))
-  const url = URL.createObjectURL(new Blob([bytes], { type: data.mimeType }))
+  const blob = new Blob([bytes], { type: data.mimeType })
+  const recording = historySession
+  const url = URL.createObjectURL(blob)
   const audio = new Audio(url)
   audio.volume = Math.min(1, Math.max(0, sessionConfig.volume))
   // 蓝云已经在合成阶段调速；其他厂商只在播放器调速，避免双重倍率。
@@ -83,6 +88,7 @@ async function playAudio(data: PreparedSpeech, signal: AbortSignal): Promise<voi
       }
     }
     signal.throwIfAborted()
+    const playedAt = Date.now()
     await new Promise<void>((resolve, reject) => {
       /** 播放完成、失败或取消后统一清理事件和超时。 */
       const finish = (error?: Error) => {
@@ -101,6 +107,26 @@ async function playAudio(data: PreparedSpeech, signal: AbortSignal): Promise<voi
       audio.onerror = () => finish(new Error('无法解码或播放 TTS 音频'))
       audio.play().catch(() => finish(new Error('音频播放失败，请检查输出设备并手动重试')))
     })
+    if (recording) {
+      void appendVoiceHistory(
+        recording,
+        {
+          text,
+          playedAt,
+          playbackRate: data.playbackRate,
+          durationSeconds: Number.isFinite(audio.duration) ? audio.duration : null,
+          synthesisMs: data.synthesisMs,
+        },
+        blob,
+      ).catch(() =>
+        useVoiceHistoryStatus.setState({
+          error: {
+            accountId: recording.accountId,
+            message: '部分播报历史保存失败，请检查本机存储空间。',
+          },
+        }),
+      )
+    }
   } finally {
     audio.pause()
     audio.removeAttribute('src')
@@ -122,6 +148,7 @@ async function synthesizeSpeech(text: string, signal: AbortSignal): Promise<Prep
   const cancel = () => {
     void window.ipcRenderer.invoke(IPC_CHANNELS.tts.cancel, requestId).catch(() => {})
   }
+  const synthesisStarted = performance.now()
   const request = window.ipcRenderer.invoke(IPC_CHANNELS.tts.synthesize, {
     requestId,
     text,
@@ -131,6 +158,7 @@ async function synthesizeSpeech(text: string, signal: AbortSignal): Promise<Prep
   try {
     return {
       ...(await request),
+      synthesisMs: performance.now() - synthesisStarted,
       rate: plan.rate,
       reason: plan.reason,
       playbackRate: plan.playbackRate,
@@ -211,6 +239,10 @@ export function startVoiceSession(accountId: string, mode: 'live' | 'local' = 'l
   const currentSession = sessionId
   sessionConfig = { ...config, scriptRequirements: selectedScript.scriptRequirements ?? '' }
   queue.stop()
+  historySession = null
+  if (useVoiceHistoryStatus.getState().error?.accountId === accountId) {
+    useVoiceHistoryStatus.setState({ error: null })
+  }
   stagingSentences = []
   useVoiceRuntime.setState({
     accountId,
@@ -257,6 +289,14 @@ export function startVoiceSession(accountId: string, mode: 'live' | 'local' = 'l
       )
       if (signal.aborted || currentSession !== sessionId) return
       stagingSentences = null
+      historySession = {
+        id: crypto.randomUUID(),
+        accountId,
+        title: selectedScript.title,
+        mode,
+        startedAt: Date.now(),
+        clipCount: 0,
+      }
       startingQueue = true
       try {
         queue.start(prepared.sentences, [], config.gapMs, prepared.audio)
@@ -289,6 +329,7 @@ export function stopVoiceSession(accountId?: string): void {
   preparationController = null
   stagingSentences = null
   continuation.stop()
+  historySession = null
   queue.stop()
   useVoiceRuntime.setState({
     accountId: null,
@@ -338,6 +379,7 @@ export function previewVoice(accountId: string, text: string): void {
   sessionId++
   continuation.stop()
   sessionConfig = getVoiceConfig(accountId)
+  historySession = null
   useVoiceRuntime.setState({
     accountId,
     mode: 'preview',

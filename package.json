@@ -31,6 +31,7 @@
     "test:script": "node --import tsx --test tests/live-script.test.ts",
     "test:script:ui": "node tests/voice-ui.mjs --scripts",
     "test:voice:ui": "node tests/voice-ui.mjs",
+    "test:voice:history:ui": "node tests/voice-ui.mjs --history",
     "prepare": "husky",
     "bump": "bumpp --no-commit --no-tag --no-push && changelogen --output",
     "release": "node ./scripts/release",

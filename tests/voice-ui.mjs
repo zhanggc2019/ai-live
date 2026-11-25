@@ -245,7 +245,106 @@ try {
   await page.goto(`http://127.0.0.1:${server.address().port}/#/live-speech`)
   await page.waitForLoadState('networkidle')
   await page.screenshot({ path: 'test-results/voice-initial.png' })
-  if (process.argv.includes('--updates')) {
+  if (process.argv.includes('--history')) {
+    await page.addInitScript(() => {
+      if (sessionStorage.getItem('history-fixture')) return
+      sessionStorage.setItem('history-fixture', 'ready')
+      localStorage.setItem(
+        'voice-config',
+        JSON.stringify({
+          state: {
+            contexts: {
+              default: {
+                selectedScriptId: 'history',
+                savedScripts: [
+                  {
+                    id: 'history',
+                    title: '水杯直播存档',
+                    content: '第一句介绍水杯的容量。第二句介绍日常用法。',
+                  },
+                ],
+                openingScript: '欢迎来看看这款水杯。',
+                prebufferSeconds: 0,
+                gapMs: 350,
+              },
+            },
+          },
+          version: 1,
+        }),
+      )
+      localStorage.setItem(
+        'live-control-storage',
+        JSON.stringify({
+          state: { contexts: { default: { platform: 'douyin', isConnected: 'connected' } } },
+          version: 0,
+        }),
+      )
+    })
+    await page.reload()
+    await page.getByRole('link', { name: '播报历史', exact: true }).click({ timeout: 3000 })
+    await page.getByText('还没有播报历史').waitFor()
+    await page.getByRole('link', { name: '返回直播话术' }).click()
+    await page.getByRole('button', { name: '试听开场', exact: true }).click()
+    await page.waitForFunction(() => window.voiceTest.playback.length >= 1)
+    await page.getByRole('link', { name: '播报历史', exact: true }).click()
+    await page.getByText('还没有播报历史').waitFor()
+    await page.getByRole('link', { name: '返回直播话术' }).click()
+
+    await page.evaluate(() => {
+      window.voiceTest.completed = 0
+      const play = HTMLMediaElement.prototype.play
+      HTMLMediaElement.prototype.play = function () {
+        this.addEventListener(
+          'ended',
+          () => {
+            window.voiceTest.completed += 1
+          },
+          { once: true },
+        )
+        return play.call(this)
+      }
+    })
+    await page.getByRole('button', { name: '开始播报', exact: true }).click()
+    await page.waitForFunction(() => window.voiceTest.completed >= 3)
+    await page.getByRole('button', { name: '结束播报', exact: true }).click()
+    await page.getByRole('link', { name: '播报历史', exact: true }).click()
+    await page.getByText('水杯直播存档', { exact: true }).first().waitFor()
+    await page.getByText('第一句介绍水杯的容量。', { exact: true }).waitFor()
+    await page.getByText('第二句介绍日常用法。', { exact: true }).waitFor()
+    await page
+      .getByText(/音频时长 0.1 秒 · 合成耗时 \d+\.\d{2} 秒/)
+      .first()
+      .waitFor()
+    await page.reload()
+    await page.getByText('第二句介绍日常用法。', { exact: true }).waitFor()
+
+    await page.getByRole('link', { name: '播放第 3 段', exact: true }).click()
+    const downloadLink = page.getByRole('link', { name: '下载音频' })
+    await downloadLink.waitFor()
+    assert.match(await downloadLink.getAttribute('href'), /^blob:/)
+    const download = page.waitForEvent('download')
+    await downloadLink.click()
+    assert.match((await download).suggestedFilename(), /\.wav$/)
+    await page.waitForFunction(() => window.voiceTest.playback.length > 0)
+    assert.equal(await page.evaluate(() => window.voiceTest.requests.length), 0)
+    assert.match(page.url(), /clip=3/)
+    await page.reload()
+    await downloadLink.waitFor()
+    assert.equal(await page.locator('audio').evaluate(audio => audio.paused), true)
+
+    const beforeReplay = await page.evaluate(() => window.voiceTest.playback.length)
+    await page.getByRole('button', { name: '连续回放', exact: true }).click()
+    await page.waitForFunction(count => window.voiceTest.playback.length >= count + 3, beforeReplay)
+    await page.getByRole('button', { name: '删除本场', exact: true }).click()
+    await page.getByRole('button', { name: '确认删除', exact: true }).click()
+    await page.getByText('还没有播报历史').waitFor()
+    await page.reload()
+    await page.getByText('还没有播报历史').waitFor()
+    assert.deepEqual(errors, [])
+    console.log(
+      'HISTORY UI CHECKS PASSED: live playback, persistence, replay, audio download, deletion',
+    )
+  } else if (process.argv.includes('--updates')) {
     const update = page.getByRole('dialog')
     await update.getByRole('heading', { name: 'AI直播 v1.0.3' }).waitFor()
     await update.getByText('优化本场讲解。', { exact: true }).waitFor()
@@ -643,7 +742,8 @@ try {
     )
     await dialog.getByLabel('模型 ID', { exact: true }).fill('Qwen/new-manual-model')
     await dialog.getByRole('button', { name: '保存', exact: true }).click()
-    await page.getByRole('link', { name: '自动回复设置', exact: true }).click()
+    await page.locator('nav a').filter({ hasText: '自动回复' }).click()
+    await page.getByRole('button', { name: '设置', exact: true }).click()
     await page.getByRole('tab', { name: 'AI回复', exact: true }).click()
     await page.getByRole('switch', { name: '启用AI自动回复', exact: true }).check()
     await page.getByRole('button', { name: '配置文本模型', exact: true }).click()

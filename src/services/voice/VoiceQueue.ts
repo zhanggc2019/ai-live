@@ -12,7 +12,7 @@ export interface VoiceQueueState {
 
 export interface VoiceQueueDriver<Audio> {
   synthesize(text: string, signal: AbortSignal): Promise<Audio>
-  play(audio: Audio, signal: AbortSignal): Promise<void>
+  play(audio: Audio, signal: AbortSignal, text: string): Promise<void>
   onChange(state: VoiceQueueState): void
 }
 
@@ -312,7 +312,7 @@ export class VoiceQueue<Audio> {
         }
         if ('error' in result) throw result.error
         this.publish({ phase: 'playing' })
-        await this.driver.play(result.audio, signal)
+        await this.driver.play(result.audio, signal, entry.text)
         if (signal.aborted || generation !== this.generation) break
         this.retainedPreload.delete(entry.text)
         this.current = undefined

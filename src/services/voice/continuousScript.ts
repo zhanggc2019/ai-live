@@ -6,14 +6,14 @@ import {
 import { splitSpeechText } from 'shared/voice'
 
 export const CONTINUATION_THEMES = [
-  '不同使用场景与一天中的具体需求',
-  '适合的人群与选择时的判断方法',
-  '产品细节及其实际用途',
-  '常见疑问与选择建议',
-  '日常使用步骤和维护方式',
-  '与同类选择相比应关注的要点',
-  '围绕观众需求的自然提问与讲解',
-  '核心信息回顾和新的生活场景',
+  '挑一天里的一个时刻，聊聊什么时候会用上',
+  '从一种常见习惯说起，怎么按自己的习惯挑',
+  '说一个容易忽略的小细节，放到平时有什么用',
+  '挑一个买之前容易犹豫的问题聊清楚',
+  '从实际用起来的一小步说起，聊聊怎么做更顺手',
+  '说说在几种选择之间纠结时，可以先看哪一点',
+  '从一个自然的小问题聊到观众自己的需要',
+  '换一个还没聊过的生活场景，顺带提一下最相关的参数',
 ] as const
 
 export interface ContinuousScriptConfig {
@@ -62,16 +62,16 @@ function repeatedSentenceShare(text: string, history: string[]): number {
   return repeated / sentences.length
 }
 
-/** 每段按底稿长度设定字数，控制模型单次生成规模。 */
+/** 长底稿分成较短的续稿批次，减少同一话题持续太久。 */
 export function continuationTarget(seedScript: string): number {
-  return Math.max(400, Math.min(4000, countScriptCharacters(seedScript)))
+  return Math.max(400, Math.min(1000, countScriptCharacters(seedScript)))
 }
 
-/** 播放到剩余约半段时开始供稿，短底稿提早启动以留出模型和 TTS 等待时间。 */
-export function continuationThreshold(targetCharacters: number): number {
-  return targetCharacters <= 1000
-    ? targetCharacters
-    : Math.max(600, Math.min(1200, Math.round(targetCharacters * 0.48)))
+/** 继续按底稿规模预留生成时间，缩短续稿批次时也保留提前量。 */
+export function continuationThreshold(seedCharacters: number): number {
+  return seedCharacters <= 1000
+    ? Math.max(400, seedCharacters)
+    : Math.max(600, Math.min(1200, Math.round(seedCharacters * 0.48)))
 }
 
 /** 管理单场直播的提前供稿、主题轮换、重复检测、有限重试与取消。 */
@@ -120,7 +120,7 @@ export class ContinuousScriptController {
     this.remainingCharacters = remainingCharacters
     if (paused || this.generating || this.failed || remainingCharacters > this.rearmAtCharacters)
       return
-    if (remainingCharacters <= continuationThreshold(continuationTarget(this.config.seedScript)))
+    if (remainingCharacters <= continuationThreshold(countScriptCharacters(this.config.seedScript)))
       void this.generateNext()
   }
 
