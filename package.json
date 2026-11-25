@@ -1,7 +1,7 @@
 {
   "name": "ai-live",
   "type": "module",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "private": true,
   "description": "AI直播：直播话术、语音播报与自动回复",
   "author": "qiutongxue",

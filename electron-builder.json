@@ -3,6 +3,7 @@
   "appId": "com.zhanggc2019.ai.live",
   "productName": "AI直播",
   "asar": true,
+  "afterPack": "scripts/verify-packaged-app.cjs",
   "directories": {
     "output": "release/${version}"
   },
