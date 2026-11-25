@@ -99,10 +99,10 @@
 
 ### 本地保存位置
 
-正常使用 `pnpm dev` 时，Windows 用户数据目录为 `%APPDATA%\oba-live-tool`（可粘贴到资源管理器地址栏）：
+Windows 用户数据目录为 `%APPDATA%\ai-live`（可粘贴到资源管理器地址栏）。从更名前的版本升级时，首次启动会把旧数据目录迁移到这里。
 
 - 话术和声音配置：`Local Storage\leveldb` 中的 `voice-config`，保存的版本在各账号的 `savedScripts` 内。
-- TTS Key：`tts-keys\mimo.bin`、`lanyun.bin`、`qwen.bin`、`openai-compatible.bin`，使用 Electron `safeStorage` 加密，不能直接当作文本打开。加密上下文与配置目录有关，跨目录恢复需先解密再在目标环境中加密，单独复制 `.bin` 无法保证可用。
+- TTS Key：`tts-keys\mimo.bin`、`lanyun.bin`、`qwen.bin`、`openai-compatible.bin`，使用 Electron `safeStorage` 加密，不能直接当作文本打开。单独复制 `.bin` 无法保证可用。macOS 升级后若旧版密钥无法读取，请在语音合成设置里重新保存。
 - LLM Key：同一 `Local Storage\leveldb` 中的 `ai-chat-storage`，当前随 AI 配置明文持久化，尚未接入 `safeStorage`。AI 助手/写稿和自动回复的配置分别保存。
 
 此前由开发助手启动的隔离预览使用项目下 `test-results\voice-preview-profile`，并通过 `http://127.0.0.1:7777` 访问；它与正常开发启动使用不同的数据目录和来源。正常 `pnpm dev` 固定为 `http://localhost:5173`，端口冲突会直接报错，避免自动切到新端口后读取到空配置。话术还按直播账号隔离，切换账号会看到对应的话术库。

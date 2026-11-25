@@ -1,9 +1,9 @@
 {
-  "name": "xinghe-ai-live",
+  "name": "ai-live",
   "type": "module",
   "version": "1.0.2",
   "private": true,
-  "description": "星河AI直播：直播话术、语音播报与自动回复",
+  "description": "AI直播：直播话术、语音播报与自动回复",
   "author": "qiutongxue",
   "license": "MIT",
   "main": "dist-electron/main/index.js",

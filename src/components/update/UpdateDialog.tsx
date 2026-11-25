@@ -7,6 +7,7 @@ import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/compone
 import { Progress } from '@/components/ui/progress'
 import { useIpcListener } from '@/hooks/useIpc'
 import { useUpdateConfigStore, useUpdateStore } from '@/hooks/useUpdate'
+import { productName } from '../../../electron-builder.json'
 
 /** 在全局显示发行说明、下载进度和重启安装入口。 */
 export function UpdateDialog() {
@@ -26,7 +27,7 @@ export function UpdateDialog() {
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogContent className="sm:max-w-lg">
-        <DialogTitle>{info ? `星河 AI 直播 v${info.latestVersion}` : '软件更新'}</DialogTitle>
+        <DialogTitle>{info ? `${productName} v${info.latestVersion}` : '软件更新'}</DialogTitle>
         <DialogDescription>
           {info ? `当前版本 v${info.currentVersion} · GitHub Releases` : '检查 GitHub 上的正式版本'}
         </DialogDescription>

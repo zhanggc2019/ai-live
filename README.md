@@ -1,7 +1,7 @@
 <div align="center">
 
   <img src="./public/favicon.png" alt="logo" width="256px" height="auto">
-  <h1>星河AI直播</h1>
+  <h1>AI直播</h1>
   <p> 抖音小店/巨量百应/抖音团购/小红书/视频号/快手小店/淘宝直播小工具 </p>
   <br>
 
@@ -45,7 +45,7 @@
 
 ### 下载安装
 
-从 [星河 AI 直播 Releases](https://github.com/zhanggc2019/ai-live/releases/latest) 下载最新安装包。
+从 [AI直播 Releases](https://github.com/zhanggc2019/ai-live/releases/latest) 下载最新安装包。若从更名前的版本升级，请先退出旧版，再手动运行新版安装包。
 
 ### 源码构建
 

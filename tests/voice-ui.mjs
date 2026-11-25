@@ -247,7 +247,7 @@ try {
   await page.screenshot({ path: 'test-results/voice-initial.png' })
   if (process.argv.includes('--updates')) {
     const update = page.getByRole('dialog')
-    await update.getByRole('heading', { name: '星河 AI 直播 v1.0.3' }).waitFor()
+    await update.getByRole('heading', { name: 'AI直播 v1.0.3' }).waitFor()
     await update.getByText('优化本场讲解。', { exact: true }).waitFor()
     await update.getByRole('button', { name: '下载更新', exact: true }).click()
     await update.getByText('45%', { exact: true }).waitFor()

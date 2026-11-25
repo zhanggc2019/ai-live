@@ -4,6 +4,7 @@ import type { AppUpdater, ProgressInfo } from 'electron-updater'
 import type { AppUpdate } from 'shared/appUpdate'
 import { IPC_CHANNELS } from 'shared/ipcChannels'
 import windowManager from '#/windowManager'
+import { name } from '../../../package.json'
 import { createLogger } from '../logger'
 import { releaseApi, selectAppUpdate } from './githubRelease'
 
@@ -21,7 +22,7 @@ class UpdateManager {
     if (!app.isPackaged) return
     const response = await net.fetch(releaseApi, {
       signal: AbortSignal.timeout(12_000),
-      headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'xinghe-ai-live' },
+      headers: { Accept: 'application/vnd.github+json', 'User-Agent': name },
     })
     if (response.status === 404) {
       this.available = undefined

@@ -4,6 +4,7 @@ import process from 'node:process'
 import { fileURLToPath } from 'node:url'
 import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
 import { IPC_CHANNELS } from 'shared/ipcChannels'
+import { appId } from '../../electron-builder.json'
 import { emitter } from './event/eventBus'
 import { providerService } from './services/ProviderService'
 import windowManager from './windowManager'
@@ -75,7 +76,7 @@ app.commandLine.appendSwitch('remote-debugging-port', '9222')
 if (os.release().startsWith('6.1')) app.disableHardwareAcceleration()
 
 // Set application name for Windows 10+ notifications
-if (process.platform === 'win32') app.setAppUserModelId('com.xinghe.ai.live')
+if (process.platform === 'win32') app.setAppUserModelId(appId)
 
 if (!app.requestSingleInstanceLock()) {
   app.quit()
@@ -88,7 +89,7 @@ const indexHtml = path.join(RENDERER_DIST, 'index.html')
 
 async function createWindow() {
   win = new BrowserWindow({
-    title: `星河AI直播 - v${app.getVersion()}`,
+    title: `${app.getName()} - v${app.getVersion()}`,
     width: 1280,
     height: 800,
     autoHideMenuBar: app.isPackaged,
