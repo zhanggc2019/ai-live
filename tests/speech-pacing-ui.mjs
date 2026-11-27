@@ -1,5 +1,12 @@
 import assert from 'node:assert/strict'
 
+/** 展开需要编辑的语音设置，保留已打开的区域。 */
+export async function openVoiceSetting(page, name) {
+  const summary = page.locator('summary').filter({ has: page.getByText(name, { exact: true }) })
+  if (!(await summary.evaluate(element => element.parentElement.open))) await summary.click()
+  return summary
+}
+
 /** 在已有隔离页面中验证动态倍率、厂商调速路径和配置保存，不读取真实密钥或连接直播。 */
 export async function checkSpeechPacing(page) {
   await page.getByRole('link', { name: '音色克隆', exact: true }).click()
@@ -15,10 +22,11 @@ export async function checkSpeechPacing(page) {
 
   /** 从展示给用户的计划读取倍率，随后与实际合成和播放记录对照。 */
   async function previewRates() {
-    await page.getByRole('group', { name: '分句语速预览' }).waitFor({ state: 'visible' })
+    await openVoiceSetting(page, '分段语速预览')
+    await page.getByRole('group', { name: '分段语速预览' }).waitFor({ state: 'visible' })
     return (
       await page
-        .getByRole('group', { name: '分句语速预览' })
+        .getByRole('group', { name: '分段语速预览' })
         .locator('span.font-medium')
         .allTextContents()
     ).map(value => Number(value.replace('×', '')))
@@ -26,12 +34,13 @@ export async function checkSpeechPacing(page) {
 
   /** 使用内存中的假密钥，让原有页面执行保存和配置状态更新。 */
   async function saveTestKey() {
+    await openVoiceSetting(page, '厂商连接')
     await page.locator('#tts-key').fill('test-pacing-key')
     await page.getByRole('button', { name: '保存密钥', exact: true }).click()
     await page.getByText('API Key · 已保存', { exact: true }).waitFor()
   }
 
-  /** 播放完整的三句测试内容，验证调速只发生在一个位置且保持音高。 */
+  /** 播放完整的测试内容，验证调速只发生在一个位置且保持音高。 */
   async function audition(provider, duringSynthesis) {
     const planned = await previewRates()
     await page.evaluate(() => {
@@ -46,8 +55,8 @@ export async function checkSpeechPacing(page) {
     }
     await page.getByText('默认账号 · 等待回复', { exact: true }).waitFor()
     const { requests, playback } = await page.evaluate(() => window.voiceTest)
-    assert.equal(requests.length, 3)
-    assert.equal(playback.length, 3)
+    assert.equal(requests.length, planned.length)
+    assert.equal(playback.length, planned.length)
     assert.ok(playback.every(item => item.preservesPitch))
     assert.ok(requests.every(item => item.settings.provider === provider))
     if (provider === 'lanyun') {
@@ -57,7 +66,7 @@ export async function checkSpeechPacing(page) {
       )
       assert.deepEqual(
         playback.map(item => item.rate),
-        [1, 1, 1],
+        planned.map(() => 1),
       )
     } else {
       assert.deepEqual(
@@ -72,6 +81,7 @@ export async function checkSpeechPacing(page) {
 
   await saveTestKey()
   const natural = await audition('mimo')
+  assert.equal(natural.length, 3)
   assert.ok(natural[0] > 1 && natural[1] < 1 && natural[2] < 1)
   await dynamic.uncheck()
   assert.deepEqual(await audition('mimo'), [1, 1, 1])
@@ -87,24 +97,29 @@ export async function checkSpeechPacing(page) {
 
   await page.locator('#tts-provider').click()
   await page.getByRole('option', { name: '蓝云 TTS（IndexTTS-2.5）', exact: true }).click()
+  assert.equal(await min.inputValue(), '0.93')
+  assert.equal(await max.inputValue(), '1.07')
   await page.getByLabel('音色 ID', { exact: true }).fill('test-voice')
   await saveTestKey()
-  assert.equal(await page.getByLabel('语速倍率', { exact: true }).isDisabled(), true)
+  assert.equal(await page.getByLabel('语速倍率', { exact: true }).count(), 0)
   await dynamic.uncheck()
   await page.getByLabel('语速倍率', { exact: true }).fill('1.3')
   assert.deepEqual(await audition('lanyun'), [1.3, 1.3, 1.3])
   await dynamic.check()
-  assert.deepEqual(await audition('lanyun'), natural)
+  assert.deepEqual(await audition('lanyun'), [1.03, 0.95, 0.94])
+  await dynamic.uncheck()
   assert.equal(await page.getByLabel('语速倍率', { exact: true }).inputValue(), '1.3')
+  await dynamic.check()
 
   for (let count = 0; count < 5; count++) {
-    await min.press('ArrowRight')
-    await max.press('ArrowLeft')
+    await min.press('ArrowLeft')
+    await max.press('ArrowRight')
   }
-  assert.equal(await min.inputValue(), '0.9')
-  assert.equal(await max.inputValue(), '1.1')
+  assert.equal(await min.inputValue(), '0.88')
+  assert.equal(await max.inputValue(), '1.12')
   await page.getByLabel('整体节奏', { exact: true }).click()
   await page.getByRole('option', { name: '舒缓陪伴', exact: true }).click()
+  await openVoiceSetting(page, '朗读细调')
   await page
     .getByLabel('直播间播报要求（选填）', { exact: true })
     .fill('自习室，安静舒缓，不要太快')
@@ -113,35 +128,66 @@ export async function checkSpeechPacing(page) {
     await page.getByRole('option', { name: '轻快互动', exact: true }).click()
     await page.getByLabel('直播间播报要求（选填）', { exact: true }).fill('活泼轻快')
   })
-  assert.ok(calm.every(rate => rate >= 0.9 && rate <= 1.1))
+  assert.ok(calm.every(rate => rate >= 0.88 && rate <= 1.12))
   const upbeat = await audition('lanyun')
   assert.ok(upbeat.every((rate, index) => rate > calm[index]))
   await page.screenshot({ path: 'test-results/dynamic-speech-pacing.png', fullPage: true })
 
+  const linked = '你平时把杯子放哪儿？要是放小包，先看看底有多宽。'
+  const volume = '这个杯子能装500毫升。'
+  await page.getByLabel('试听文字').fill(linked + volume)
+  const grouped = await audition('lanyun')
+  assert.equal(grouped.length, 2)
+  assert.ok(grouped[0] > grouped[1])
+  assert.deepEqual(await page.evaluate(() => window.voiceTest.requests.map(item => item.text)), [
+    linked,
+    volume,
+  ])
+
   await page.reload()
   await page.waitForLoadState('networkidle')
   assert.equal(await dynamic.isChecked(), true)
-  assert.equal(await min.inputValue(), '0.9')
-  assert.equal(await max.inputValue(), '1.1')
+  assert.equal(await min.inputValue(), '0.88')
+  assert.equal(await max.inputValue(), '1.12')
   assert.equal(await page.getByLabel('整体节奏', { exact: true }).innerText(), '轻快互动')
+  await openVoiceSetting(page, '朗读细调')
   assert.equal(
     await page.getByLabel('直播间播报要求（选填）', { exact: true }).inputValue(),
     '活泼轻快',
   )
+  await dynamic.uncheck()
   assert.equal(await page.getByLabel('语速倍率', { exact: true }).inputValue(), '1.3')
+  await dynamic.check()
   assert.equal(await page.getByRole('button', { name: '停止语音', exact: true }).count(), 0)
 
-  // 模拟升级前没有节奏配置的已保存账号，旧话术和厂商配置必须保留。
+  // 旧账号保存过原默认范围，升级后仍保留整体节奏和话术。
   await page.evaluate(() => {
     const saved = JSON.parse(localStorage.getItem('voice-config'))
-    delete saved.state.contexts.default.speechPacing
+    saved.state.contexts.default.speechPacing = {
+      enabled: true,
+      minRate: 0.85,
+      maxRate: 1.15,
+      style: 'calm',
+      requirements: '安静直播',
+    }
     saved.state.contexts.default.openingScript = '升级前保存的开场内容。'
     localStorage.setItem('voice-config', JSON.stringify(saved))
   })
   await page.reload()
   await page.waitForLoadState('networkidle')
+  assert.equal(await min.inputValue(), '0.93')
+  assert.equal(await max.inputValue(), '1.07')
+  assert.equal(await page.getByLabel('整体节奏', { exact: true }).innerText(), '舒缓陪伴')
+  await openVoiceSetting(page, '朗读细调')
+  assert.equal(await page.getByLabel('直播间播报要求（选填）').inputValue(), '安静直播')
+  await page.locator('#tts-provider').click()
+  await page.getByRole('option', { name: '小米 MiMo V2.5 TTS', exact: true }).click()
   assert.equal(await min.inputValue(), '0.85')
   assert.equal(await max.inputValue(), '1.15')
+  await page.locator('#tts-provider').click()
+  await page.getByRole('option', { name: '蓝云 TTS（IndexTTS-2.5）', exact: true }).click()
+  assert.equal(await min.inputValue(), '0.93')
+  assert.equal(await max.inputValue(), '1.07')
   assert.equal(await dynamic.isChecked(), true)
   assert.equal(await page.getByLabel('音色 ID', { exact: true }).inputValue(), 'test-voice')
   await page.getByRole('navigation').getByRole('link', { name: '直播话术', exact: true }).click()
@@ -149,4 +195,15 @@ export async function checkSpeechPacing(page) {
     await page.getByLabel('开场介绍', { exact: true }).inputValue(),
     '升级前保存的开场内容。',
   )
+
+  // 新版手动选回旧默认值仍属于自定义，重启后照常保留。
+  await page.getByRole('link', { name: '音色克隆', exact: true }).click()
+  for (let count = 0; count < 8; count++) {
+    await min.press('ArrowLeft')
+    await max.press('ArrowRight')
+  }
+  await page.reload()
+  await page.waitForLoadState('networkidle')
+  assert.equal(await min.inputValue(), '0.85')
+  assert.equal(await max.inputValue(), '1.15')
 }

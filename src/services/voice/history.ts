@@ -1,3 +1,4 @@
+import type { LiveScriptInput, ScriptOutputStatus } from 'shared/liveScript'
 import { create } from 'zustand'
 
 export interface VoiceHistorySession {
@@ -23,18 +24,48 @@ export const useVoiceHistoryStatus = create<{
   error: { accountId: string; message: string } | null
 }>(() => ({ revision: 0, error: null }))
 
+export interface ScriptHistoryEntry {
+  id: string
+  accountId: string
+  title: string
+  createdAt: number
+  kind: 'draft' | 'continuation' | 'saved'
+  status: ScriptOutputStatus
+  text: string
+  model?: string
+  segmentIndex?: number
+  theme?: string
+  note?: string
+  seedScript?: string
+}
+
+export interface ScriptHistoryRecord extends ScriptHistoryEntry {
+  references: LiveScriptInput
+}
+
+export const useScriptHistoryStatus = create<{
+  revision: number
+  saveErrors: Record<string, boolean>
+}>(() => ({ revision: 0, saveErrors: {} }))
+
 let database: Promise<IDBDatabase> | undefined
 
 /** 文本索引与音频分开保存，浏览历史时只读取列表用到的数据。 */
 function openHistory(): Promise<IDBDatabase> {
   if (!database) {
     database = new Promise<IDBDatabase>((resolve, reject) => {
-      const request = indexedDB.open('ai-live-voice-history', 1)
-      request.onupgradeneeded = () => {
+      const request = indexedDB.open('ai-live-voice-history', 2)
+      request.onupgradeneeded = event => {
         const db = request.result
-        db.createObjectStore('sessions', { keyPath: 'id' }).createIndex('accountId', 'accountId')
-        db.createObjectStore('clips')
-        db.createObjectStore('audio')
+        if (event.oldVersion < 1) {
+          db.createObjectStore('sessions', { keyPath: 'id' }).createIndex('accountId', 'accountId')
+          db.createObjectStore('clips')
+          db.createObjectStore('audio')
+        }
+        db.createObjectStore('scriptHistory', { keyPath: ['accountId', 'id'] }).createIndex(
+          'accountDate',
+          ['accountId', 'createdAt', 'id'],
+        )
       }
       request.onsuccess = () => {
         const db = request.result
@@ -66,6 +97,63 @@ function committed(transaction: IDBTransaction): Promise<void> {
   return new Promise((resolve, reject) => {
     transaction.oncomplete = () => resolve()
     transaction.onabort = () => reject(transaction.error ?? new Error('历史记录保存失败'))
+  })
+}
+
+/** 保存正文和原始依据。即使传入完整请求，也只记录审稿所需的字段。 */
+export function archiveScriptHistory(entry: ScriptHistoryEntry, input: LiveScriptInput): void {
+  if (!entry.text.trim()) return
+  const references: LiveScriptInput = {
+    productIntro: input.productIntro,
+    referenceText: input.referenceText,
+    sourceScript: input.sourceScript,
+    requirements: input.requirements,
+  }
+  void openHistory()
+    .then(async db => {
+      const transaction = db.transaction('scriptHistory', 'readwrite', { durability: 'strict' })
+      const done = committed(transaction)
+      transaction.objectStore('scriptHistory').put({ ...entry, references })
+      await done
+      useScriptHistoryStatus.setState(state => ({ revision: state.revision + 1 }))
+    })
+    .catch(() => {
+      useScriptHistoryStatus.setState(state => ({
+        saveErrors: { ...state.saveErrors, [entry.accountId]: true },
+      }))
+    })
+}
+
+/** 用账号内的时间和 ID 游标分页，续稿持续生成时也能稳定翻看旧版本。 */
+export async function listScriptHistory(
+  accountId: string,
+  before: Pick<ScriptHistoryEntry, 'createdAt' | 'id'> | undefined,
+  limit: number,
+): Promise<ScriptHistoryRecord[]> {
+  const db = await openHistory()
+  const range = IDBKeyRange.bound(
+    [accountId, 0],
+    before ? [accountId, before.createdAt, before.id] : [accountId, Number.MAX_SAFE_INTEGER],
+    false,
+    Boolean(before),
+  )
+  const request = db
+    .transaction('scriptHistory')
+    .objectStore('scriptHistory')
+    .index('accountDate')
+    .openCursor(range, 'prev')
+  return new Promise((resolve, reject) => {
+    const records: ScriptHistoryRecord[] = []
+    request.onsuccess = () => {
+      const cursor = request.result
+      if (!cursor || records.length >= limit) {
+        resolve(records)
+        return
+      }
+      records.push(cursor.value)
+      cursor.continue()
+    }
+    request.onerror = () => reject(request.error)
   })
 }
 

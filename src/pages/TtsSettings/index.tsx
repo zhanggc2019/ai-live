@@ -1,16 +1,17 @@
-import { useEffect, useState } from 'react'
+import { ChevronDown, Play } from 'lucide-react'
+import { type ReactNode, type Ref, useEffect, useRef, useState } from 'react'
 import { IPC_CHANNELS } from 'shared/ipcChannels'
-import { normalizeSpeechPacing, prepareSpeechPacing } from 'shared/speechPacing'
+import { prepareSpeechPacing, splitSpeechForSynthesis } from 'shared/speechPacing'
 import {
   MIMO_VOICES,
   QWEN_VOICES,
-  splitSpeechText,
-  TTS_PRESETS,
+  resolveLanyunEmotionMode,
   type TtsProviderId,
+  type TtsSettings,
 } from 'shared/voice'
 import { Title } from '@/components/common/Title'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import {
@@ -23,27 +24,57 @@ import {
 import { Textarea } from '@/components/ui/textarea'
 import { useAccounts } from '@/hooks/useAccounts'
 import { useToast } from '@/hooks/useToast'
-import { createVoiceConfig, useVoiceConfigStore } from '@/hooks/useVoiceConfig'
+import { getVoiceConfig, useVoiceConfigStore } from '@/hooks/useVoiceConfig'
 import { previewVoice } from '@/services/voice/runtime'
-import { LanyunSettings } from './LanyunSettings'
-import { SpeechPacingSettings } from './SpeechPacingSettings'
+import { LanyunConnectionFields, LanyunSpeechSettings, LanyunVoicePicker } from './LanyunSettings'
+import { SpeechPacingRequirements, SpeechPacingSettings } from './SpeechPacingSettings'
 import { VoiceClone } from './VoiceClone'
 
-/** 配置可切换的 TTS 厂商与声卡，密钥只发送主进程加密保存。 */
+interface SettingsSectionProps {
+  title: string
+  summary: string
+  children: ReactNode
+  ref?: Ref<HTMLDetailsElement>
+}
+
+/** 用可键盘操作的折叠区收起低频设置，收起后保留表单状态。 */
+function SettingsSection({ title, summary, children, ref }: SettingsSectionProps) {
+  return (
+    <details ref={ref} className="group">
+      <summary className="flex cursor-pointer list-none items-center gap-3 px-5 py-3.5 hover:bg-muted/60 focus-visible:outline-ring [&::-webkit-details-marker]:hidden">
+        <span className="flex min-w-0 flex-1 flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
+          <span className="text-sm font-medium">{title}</span>
+          <span className="text-xs text-muted-foreground">{summary}</span>
+        </span>
+        <ChevronDown
+          aria-hidden="true"
+          className="size-4 shrink-0 text-muted-foreground group-open:rotate-180"
+        />
+      </summary>
+      <div className="px-5 pt-1 pb-5">{children}</div>
+    </details>
+  )
+}
+
+/** 先提供音色选择和试听，将厂商、克隆及输出配置放在可展开的区域。 */
 export default function TtsSettingsPage() {
   const accountId = useAccounts(state => state.currentAccountId)
-  const stored = useVoiceConfigStore(state => state.contexts[accountId])
-  const config = { ...createVoiceConfig(), ...stored }
-  const pacing = normalizeSpeechPacing(config.speechPacing)
+  useVoiceConfigStore(state => state.contexts[accountId])
+  const config = getVoiceConfig(accountId)
+  const { provider, speechPacing: pacing } = config
   const update = useVoiceConfigStore(state => state.update)
   const updateProvider = useVoiceConfigStore(state => state.updateProvider)
-  const settings = { ...TTS_PRESETS[config.provider], ...config.providers[config.provider] }
+  const settings = config.providers[provider]
+  const disableEmotionDescription =
+    provider === 'lanyun' && resolveLanyunEmotionMode(settings) !== 'voice'
   const [apiKey, setApiKey] = useState('')
   const [hasKey, setHasKey] = useState(false)
   const [saving, setSaving] = useState(false)
   const [keyRevision, setKeyRevision] = useState(0)
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([])
-  const [preview, setPreview] = useState('欢迎来到直播间，很高兴为大家介绍今天的产品。')
+  const [preview, setPreview] = useState('要是你平时用小包，可以先看看这个杯子放不放得下。')
+  const connection = useRef<HTMLDetailsElement>(null)
+  const keyField = useRef<HTMLInputElement>(null)
   const { toast } = useToast()
 
   useEffect(() => {
@@ -51,7 +82,7 @@ export default function TtsSettingsPage() {
     setApiKey('')
     setHasKey(false)
     window.ipcRenderer
-      .invoke(IPC_CHANNELS.tts.hasKey, config.provider)
+      .invoke(IPC_CHANNELS.tts.hasKey, provider)
       .then(value => {
         if (active) setHasKey(value)
       })
@@ -61,10 +92,10 @@ export default function TtsSettingsPage() {
     return () => {
       active = false
     }
-  }, [config.provider, toast])
+  }, [provider, toast])
 
   useEffect(() => {
-    /** 刷新输出设备清单，保留失联设备的选择以便用户明确修复。 */
+    /** 保留设备切换状态，以便提示用户重新选择失联的设备。 */
     const refresh = () => {
       navigator.mediaDevices
         ?.enumerateDevices()
@@ -76,11 +107,11 @@ export default function TtsSettingsPage() {
     return () => navigator.mediaDevices?.removeEventListener('devicechange', refresh)
   }, [])
 
-  /** 保存输入密钥后立即从输入框移除，不从主进程读回明文。 */
+  /** 保存输入密钥后立即从输入框移除，密钥由主进程加密保管。 */
   async function saveKey() {
     setSaving(true)
     try {
-      await window.ipcRenderer.invoke(IPC_CHANNELS.tts.saveKey, config.provider, apiKey)
+      await window.ipcRenderer.invoke(IPC_CHANNELS.tts.saveKey, provider, apiKey)
       setHasKey(Boolean(apiKey.trim()))
       setApiKey('')
       setKeyRevision(value => value + 1)
@@ -92,7 +123,13 @@ export default function TtsSettingsPage() {
     }
   }
 
-  /** 用户主动授权麦克风后读取设备名称；立即释放流，不保留录音。 */
+  /** 展开连接表单并聚焦密钥，方便首次配置后回到试听。 */
+  function configureKey() {
+    if (connection.current) connection.current.open = true
+    keyField.current?.focus()
+  }
+
+  /** 用户授权后更新设备名称，并立即释放麦克风。 */
   async function discoverDevices() {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
@@ -101,11 +138,16 @@ export default function TtsSettingsPage() {
       setDevices(items.filter(item => item.kind === 'audiooutput'))
       toast.success('音频设备已刷新')
     } catch {
-      toast.error('无法读取设备名称，请检查 Windows 麦克风权限；也可使用默认输出设备')
+      toast.error('无法读取设备名称，请检查 Windows 麦克风权限。也可使用默认输出设备')
     }
   }
 
-  /** 播放测试句，使用与直播一致的厂商、音色及设备。 */
+  /** 将厂商配置更新到当前账号，切换厂商时保留各自的设置。 */
+  function updateSettings(patch: Partial<TtsSettings>) {
+    updateProvider(accountId, provider, patch)
+  }
+
+  /** 试听使用与直播一致的厂商、音色及输出设备。 */
   function audition() {
     try {
       previewVoice(accountId, preview)
@@ -115,203 +157,287 @@ export default function TtsSettingsPage() {
   }
 
   return (
-    <div className="container space-y-6 py-6">
+    <div className="@container container max-w-5xl space-y-5 pb-5">
       <Title
         title="音色克隆"
-        description="上传保存蓝云私人音色；厂商、音色及输出设置按直播账号保存"
+        description="选择直播音色并试听。设置按账号保存，下次开始播报时生效。"
       />
-      <VoiceClone
-        settings={settings}
-        hasKey={hasKey && !saving}
-        onCreated={voice =>
-          updateProvider(accountId, 'lanyun', { voice: voice.id, voiceIdType: 'voice_id' })
-        }
-      />
-      <div className="grid gap-6 xl:grid-cols-2">
-        <Card>
-          <CardHeader>
-            <CardTitle>TTS 厂商</CardTitle>
-            <CardDescription>
-              正在播报时的配置修改，下次开始生效。密钥按厂商在本机共用。
-            </CardDescription>
+      <div className="grid items-start gap-4 @min-[610px]:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
+        <Card className="min-w-0 shadow-none">
+          <CardHeader className="p-5 pb-3">
+            <CardTitle className="text-base">音色与试听</CardTitle>
           </CardHeader>
-          <CardContent className="space-y-4">
-            <Label htmlFor="tts-provider">厂商</Label>
-            <Select
-              disabled={saving}
-              value={config.provider}
-              onValueChange={value => update(accountId, { provider: value as TtsProviderId })}
-            >
-              <SelectTrigger id="tts-provider">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="mimo">小米 MiMo V2.5 TTS</SelectItem>
-                <SelectItem value="lanyun">蓝云 TTS（IndexTTS-2.5）</SelectItem>
-                <SelectItem value="qwen">阿里千问 TTS（Qwen Audio 3.1 Flash）</SelectItem>
-                <SelectItem value="openai-compatible">OpenAI 兼容语音厂商</SelectItem>
-              </SelectContent>
-            </Select>
+          <CardContent className="space-y-3 p-5 pt-0">
             <div className="space-y-2">
-              <Label htmlFor="tts-url">API 基础地址</Label>
-              <Input
-                id="tts-url"
-                value={settings.baseURL}
-                disabled={config.provider === 'mimo'}
-                placeholder={
-                  config.provider === 'qwen'
-                    ? 'https://业务空间ID.cn-beijing.maas.aliyuncs.com/api/v1'
-                    : 'https://厂商域名/v1'
-                }
-                onChange={event =>
-                  updateProvider(accountId, config.provider, { baseURL: event.target.value })
+              <Label htmlFor="tts-provider">厂商</Label>
+              <Select
+                disabled={saving}
+                value={provider}
+                onValueChange={value => update(accountId, { provider: value as TtsProviderId })}
+              >
+                <SelectTrigger id="tts-provider">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="mimo">小米 MiMo V2.5 TTS</SelectItem>
+                  <SelectItem value="lanyun">蓝云 TTS（IndexTTS-2.5）</SelectItem>
+                  <SelectItem value="qwen">阿里千问 TTS（Qwen Audio 3.1 Flash）</SelectItem>
+                  <SelectItem value="openai-compatible">OpenAI 兼容语音厂商</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            {provider === 'lanyun' ? (
+              <LanyunVoicePicker
+                key={accountId}
+                settings={settings}
+                hasKey={hasKey && !saving}
+                keyRevision={keyRevision}
+                onChange={updateSettings}
+              />
+            ) : (
+              <div className="space-y-2">
+                <Label htmlFor="tts-voice">音色</Label>
+                {provider === 'openai-compatible' ? (
+                  <Input
+                    id="tts-voice"
+                    value={settings.voice}
+                    maxLength={200}
+                    placeholder="填写厂商提供的音色 ID"
+                    onChange={event => updateSettings({ voice: event.target.value })}
+                  />
+                ) : (
+                  <Select
+                    value={settings.voice}
+                    onValueChange={value => updateSettings({ voice: value })}
+                  >
+                    <SelectTrigger id="tts-voice">
+                      <SelectValue placeholder="选择音色" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {provider === 'mimo' ? (
+                        MIMO_VOICES.map(voice => (
+                          <SelectItem key={voice} value={voice}>
+                            {voice === 'mimo_default' ? 'MiMo 默认音色' : voice}
+                          </SelectItem>
+                        ))
+                      ) : (
+                        <>
+                          {settings.voice &&
+                            !QWEN_VOICES.some(voice => voice.id === settings.voice) && (
+                              <SelectItem value={settings.voice}>
+                                当前音色 · {settings.voice}
+                              </SelectItem>
+                            )}
+                          {QWEN_VOICES.map(voice => (
+                            <SelectItem key={voice.id} value={voice.id}>
+                              {voice.name}
+                            </SelectItem>
+                          ))}
+                        </>
+                      )}
+                    </SelectContent>
+                  </Select>
+                )}
+              </div>
+            )}
+            <div className="space-y-2 border-t pt-3">
+              <Label htmlFor="tts-preview">试听文字</Label>
+              <Textarea
+                id="tts-preview"
+                className="min-h-14"
+                value={preview}
+                maxLength={1000}
+                onChange={event => setPreview(event.target.value)}
+              />
+              <div className="flex flex-wrap items-center gap-3">
+                <Button
+                  disabled={!hasKey || saving || !settings.voice.trim() || !preview.trim()}
+                  onClick={audition}
+                >
+                  <Play aria-hidden="true" />
+                  合成并播放
+                </Button>
+                {!hasKey && !saving && (
+                  <Button variant="link" size="sm" onClick={configureKey}>
+                    配置 API Key
+                  </Button>
+                )}
+              </div>
+              <details className="group">
+                <summary className="inline-flex cursor-pointer list-none items-center gap-1.5 rounded-sm py-1 text-xs text-muted-foreground hover:text-foreground focus-visible:outline-ring [&::-webkit-details-marker]:hidden">
+                  <span>分段语速预览</span>
+                  <ChevronDown aria-hidden="true" className="size-3.5 group-open:rotate-180" />
+                </summary>
+                <fieldset
+                  className="mt-2 min-w-0 space-y-2 rounded-md bg-muted p-3 text-xs"
+                  aria-label="分段语速预览"
+                >
+                  {[...new Set(splitSpeechForSynthesis(preview, settings))]
+                    .slice(0, 4)
+                    .map(text => {
+                      const plan = prepareSpeechPacing(
+                        text,
+                        settings,
+                        pacing,
+                        config.scriptRequirements,
+                      )
+                      return (
+                        <div key={text} className="flex items-start gap-2">
+                          <span className="shrink-0 font-medium tabular-nums">
+                            {plan.rate.toFixed(2)}×
+                          </span>
+                          <span className="min-w-0 truncate" title={`${text}\n${plan.reason}`}>
+                            {text}
+                          </span>
+                        </div>
+                      )
+                    })}
+                </fieldset>
+              </details>
+            </div>
+          </CardContent>
+        </Card>
+        <div className="min-w-0 space-y-4">
+          <SpeechPacingSettings
+            settings={pacing}
+            onChange={patch => update(accountId, { speechPacing: patch })}
+            fixedRate={
+              provider === 'lanyun'
+                ? {
+                    value: settings.speechRate ?? 1,
+                    onChange: speechRate => updateSettings({ speechRate }),
+                  }
+                : undefined
+            }
+          />
+          <Card className="shadow-none">
+            <SettingsSection title="克隆私人音色" summary="蓝云 · 上传录音">
+              <VoiceClone
+                key={accountId}
+                settings={settings}
+                hasKey={hasKey && !saving}
+                onCreated={voice =>
+                  updateProvider(accountId, 'lanyun', { voice: voice.id, voiceIdType: 'voice_id' })
                 }
               />
-              {config.provider === 'qwen' && (
-                <p className="text-xs text-muted-foreground">
-                  将地址中的业务空间 ID 换为百炼控制台的实际 ID；新加坡地域将 cn-beijing 改为
-                  ap-southeast-1，并使用同地域 API Key。
-                </p>
-              )}
-            </div>
-            <div className="space-y-2">
+            </SettingsSection>
+          </Card>
+        </div>
+      </div>
+      <Card className="divide-y shadow-none">
+        <SettingsSection
+          title="厂商连接"
+          summary={hasKey ? '已保存密钥' : '未配置密钥'}
+          ref={connection}
+        >
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div className="space-y-2 sm:col-span-2">
               <Label htmlFor="tts-key">API Key {hasKey ? '· 已保存' : '· 未配置'}</Label>
-              <div className="flex gap-2">
+              <div className="flex flex-wrap gap-2">
                 <Input
                   id="tts-key"
+                  ref={keyField}
+                  className="min-w-36 flex-1"
                   type="password"
                   autoComplete="new-password"
                   value={apiKey}
                   placeholder={hasKey ? '输入新密钥可替换' : '粘贴厂商 API Key'}
                   onChange={event => setApiKey(event.target.value)}
                 />
-                <Button disabled={saving || !apiKey.trim()} onClick={saveKey}>
+                <Button variant="outline" disabled={saving || !apiKey.trim()} onClick={saveKey}>
                   保存密钥
                 </Button>
               </div>
+              <p className="text-xs text-muted-foreground">同一厂商的密钥在本机各账号间共用。</p>
             </div>
-            <div className="space-y-2">
-              <Label htmlFor="tts-model">模型</Label>
-              <Input
-                id="tts-model"
-                value={settings.model}
-                disabled={config.provider === 'lanyun' || config.provider === 'qwen'}
-                maxLength={200}
-                onChange={event =>
-                  updateProvider(accountId, config.provider, { model: event.target.value })
-                }
-              />
-            </div>
-            {config.provider === 'lanyun' ? (
-              <LanyunSettings
-                key={accountId}
-                settings={settings}
-                hasKey={hasKey && !saving}
-                keyRevision={keyRevision}
-                dynamicRate={pacing.enabled}
-                onChange={patch => updateProvider(accountId, 'lanyun', patch)}
-              />
-            ) : (
-              <div className="space-y-2">
-                <Label htmlFor="tts-voice">音色</Label>
-                {config.provider === 'mimo' ? (
-                  <Select
-                    value={settings.voice}
-                    onValueChange={value =>
-                      updateProvider(accountId, config.provider, { voice: value })
-                    }
-                  >
-                    <SelectTrigger id="tts-voice">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {MIMO_VOICES.map(voice => (
-                        <SelectItem key={voice} value={voice}>
-                          {voice === 'mimo_default' ? 'MiMo 默认音色' : voice}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                ) : config.provider === 'qwen' ? (
-                  <>
-                    <Select
-                      value={settings.voice}
-                      onValueChange={value => updateProvider(accountId, 'qwen', { voice: value })}
-                    >
-                      <SelectTrigger id="tts-voice">
-                        <SelectValue placeholder="选择音色或填写音色 ID" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {settings.voice &&
-                          !QWEN_VOICES.some(voice => voice.id === settings.voice) && (
-                            <SelectItem value={settings.voice}>
-                              当前音色 · {settings.voice}
-                            </SelectItem>
-                          )}
-                        {QWEN_VOICES.map(voice => (
-                          <SelectItem key={voice.id} value={voice.id}>
-                            {voice.name}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                    <Label htmlFor="qwen-voice-id">音色 ID（可填写其他系统或复刻音色）</Label>
-                    <Input
-                      id="qwen-voice-id"
-                      value={settings.voice}
-                      maxLength={200}
-                      onChange={event =>
-                        updateProvider(accountId, 'qwen', { voice: event.target.value })
-                      }
-                    />
-                  </>
-                ) : (
-                  <Input
-                    id="tts-voice"
-                    value={settings.voice}
-                    maxLength={200}
-                    placeholder="厂商提供的 Voice ID"
-                    onChange={event =>
-                      updateProvider(accountId, config.provider, { voice: event.target.value })
-                    }
-                  />
+            {provider !== 'mimo' && (
+              <div className="space-y-2 sm:col-span-2">
+                <Label htmlFor="tts-url">API 基础地址</Label>
+                <Input
+                  id="tts-url"
+                  value={settings.baseURL}
+                  placeholder={
+                    provider === 'qwen'
+                      ? 'https://业务空间ID.cn-beijing.maas.aliyuncs.com/api/v1'
+                      : 'https://厂商域名/v1'
+                  }
+                  onChange={event => updateSettings({ baseURL: event.target.value })}
+                />
+                {provider === 'qwen' && (
+                  <p className="text-xs text-muted-foreground">
+                    填写百炼控制台的业务空间地址，并使用同地域 API Key。
+                  </p>
                 )}
               </div>
             )}
+            {(provider === 'mimo' || provider === 'openai-compatible') && (
+              <div className="space-y-2">
+                <Label htmlFor="tts-model">模型</Label>
+                <Input
+                  id="tts-model"
+                  value={settings.model}
+                  maxLength={200}
+                  onChange={event => updateSettings({ model: event.target.value })}
+                />
+              </div>
+            )}
+            {provider === 'lanyun' && (
+              <LanyunConnectionFields settings={settings} onChange={updateSettings} />
+            )}
+            {provider === 'qwen' && (
+              <div className="space-y-2 sm:col-span-2">
+                <Label htmlFor="qwen-voice-id">音色 ID（可填写其他系统或复刻音色）</Label>
+                <Input
+                  id="qwen-voice-id"
+                  value={settings.voice}
+                  maxLength={200}
+                  onChange={event => updateSettings({ voice: event.target.value })}
+                />
+              </div>
+            )}
+            {provider === 'openai-compatible' && (
+              <p className="text-xs text-muted-foreground sm:col-span-2">
+                厂商需支持 /audio/speech 接口和 WAV 输出。
+              </p>
+            )}
+          </div>
+        </SettingsSection>
+        <SettingsSection
+          title="朗读细调"
+          summary={provider === 'lanyun' ? '语气、语言、停顿' : '朗读风格、播报要求'}
+        >
+          <div className="space-y-5">
+            {provider === 'lanyun' && (
+              <LanyunSpeechSettings settings={settings} onChange={updateSettings} />
+            )}
             <div className="space-y-2">
               <Label htmlFor="tts-style">
-                {config.provider === 'lanyun' ? '情感描述（可选）' : '朗读风格'}
+                {provider === 'lanyun' ? '情感描述（可选）' : '朗读风格'}
               </Label>
               <Textarea
                 id="tts-style"
+                disabled={disableEmotionDescription}
                 value={settings.instructions}
                 maxLength={2000}
-                placeholder="亲切自然、语速适中……"
-                onChange={event =>
-                  updateProvider(accountId, config.provider, { instructions: event.target.value })
-                }
+                placeholder="例如：亲切自然，像和熟人聊天。"
+                onChange={event => updateSettings({ instructions: event.target.value })}
               />
+              {disableEmotionDescription && (
+                <p className="text-xs text-muted-foreground">选择「按音色或情感描述」时使用。</p>
+              )}
+              {provider === 'openai-compatible' && (
+                <p className="text-xs text-muted-foreground">请按厂商支持的朗读指令填写。</p>
+              )}
             </div>
-            <p className="text-xs text-muted-foreground">
-              {config.provider === 'lanyun'
-                ? '蓝云模型由服务端管理。填写情感描述会启用文本情感控制，留空则使用音色默认表现。'
-                : config.provider === 'qwen'
-                  ? '使用阿里原生 TTS 接口。朗读风格用于控制情感、方言和角色；复刻音色须绑定当前模型，更多音色请确认地域支持。'
-                  : '兼容厂商需支持 /audio/speech 与 WAV 输出；若不支持风格指令，请留空。MiMo 使用预置音色模型 mimo-v2.5-tts。'}
-            </p>
-          </CardContent>
-        </Card>
-        <div className="space-y-6">
-          <SpeechPacingSettings
-            settings={pacing}
-            onChange={patch => update(accountId, { speechPacing: { ...pacing, ...patch } })}
-          />
-          <Card>
-            <CardHeader>
-              <CardTitle>声音输出</CardTitle>
-              <CardDescription>本软件负责播放；直播软件负责把该音频送入直播间</CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-4">
+            <SpeechPacingRequirements
+              settings={pacing}
+              onChange={patch => update(accountId, { speechPacing: patch })}
+            />
+          </div>
+        </SettingsSection>
+        <SettingsSection title="声音输出" summary="输出设备、音量">
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div className="space-y-2">
               <Label htmlFor="tts-output">输出设备</Label>
               <Select
                 value={config.outputDeviceId}
@@ -337,79 +463,29 @@ export default function TtsSettingsPage() {
                     )}
                 </SelectContent>
               </Select>
-              <Button variant="outline" onClick={discoverDevices}>
-                授权读取设备名称 / 刷新
+              <Button variant="outline" size="sm" onClick={discoverDevices}>
+                授权并刷新设备
               </Button>
-              <div className="space-y-2">
-                <Label htmlFor="tts-volume">播放音量：{Math.round(config.volume * 100)}%</Label>
-                <input
-                  id="tts-volume"
-                  className="w-full"
-                  type="range"
-                  min={0}
-                  max={1}
-                  step={0.05}
-                  value={config.volume}
-                  onChange={event => update(accountId, { volume: Number(event.target.value) })}
-                />
-              </div>
-              <div className="rounded-md bg-muted p-3 text-sm space-y-2">
-                <p>OBS / 直播伴侣：添加本软件的应用音频采集；或采集这里所选设备的桌面音频。</p>
-                <p>
-                  虚拟声卡：这里选择虚拟声卡的播放端，再把其录音端设为直播软件的麦克风。声卡需自行安装并配置。
-                </p>
-                <p>
-                  先试听并观察直播软件音量条，再正式播报。不要同时采集桌面音频和同一路虚拟麦克风，以免重音。
-                </p>
-              </div>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardHeader>
-              <CardTitle>合成试听</CardTitle>
-              <CardDescription>
-                播放时提前合成后两句；相同文本和配置可复用本次运行的音频缓存
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              <Textarea
-                aria-label="试听文字"
-                value={preview}
-                maxLength={1000}
-                onChange={event => setPreview(event.target.value)}
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="tts-volume">播放音量 {Math.round(config.volume * 100)}%</Label>
+              <input
+                id="tts-volume"
+                className="w-full accent-primary"
+                type="range"
+                min={0}
+                max={1}
+                step={0.05}
+                value={config.volume}
+                onChange={event => update(accountId, { volume: Number(event.target.value) })}
               />
-              <fieldset
-                className="space-y-2 rounded-md bg-muted p-3 text-xs"
-                aria-label="分句语速预览"
-              >
-                <p className="font-medium">分句语速预览（最多 4 句）</p>
-                {[...new Set(splitSpeechText(preview))].slice(0, 4).map(text => {
-                  const plan = prepareSpeechPacing(
-                    text,
-                    settings,
-                    pacing,
-                    config.scriptRequirements,
-                  )
-                  return (
-                    <div key={text} className="flex items-start gap-2">
-                      <span className="shrink-0 font-medium">{plan.rate.toFixed(2)}×</span>
-                      <span className="min-w-0 truncate" title={`${text}\n${plan.reason}`}>
-                        {text}
-                      </span>
-                    </div>
-                  )
-                })}
-              </fieldset>
-              <Button
-                disabled={!hasKey || saving || !settings.voice.trim() || !preview.trim()}
-                onClick={audition}
-              >
-                合成并播放
-              </Button>
-            </CardContent>
-          </Card>
-        </div>
-      </div>
+            </div>
+            <p className="text-xs leading-relaxed text-muted-foreground sm:col-span-2">
+              在 OBS 或直播伴侣中选择应用音频、桌面音频或虚拟声卡录音端，只采集其中一路，避免重音。
+            </p>
+          </div>
+        </SettingsSection>
+      </Card>
     </div>
   )
 }

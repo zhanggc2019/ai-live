@@ -72,6 +72,7 @@ test('续稿提示词隔离商品事实、底稿与最近内容，并拒绝不�
     seedScript: '先介绍这只杯子。你平时出门会带水吗？',
     productIntro: '容量500毫升。',
     referenceText: '价格未提供。',
+    sourceScript: '原话术写的是杯盖可拆洗。',
     requirements: '温和讲解',
     theme: '使用场景',
     recentThemes: ['产品细节'],
@@ -88,6 +89,7 @@ test('续稿提示词隔离商品事实、底稿与最近内容，并拒绝不�
   assert.match(messages[0].content, /不得假装看到弹幕/)
   const context = JSON.parse(messages[1].content)
   assert.equal(context.已确认的商品要素, '容量500毫升。')
+  assert.equal(context.原话术, request.sourceScript)
   assert.equal(context.上一段结尾, '刚才说到随手拿取。你平时把杯子放哪儿？')
   assert.deepEqual(context.近期段落片段_请避免复述, request.recentSamples)
   const firstContinuation = buildContinuationScriptMessages({ ...request, recentSamples: [] })
@@ -174,6 +176,7 @@ test('停止后旧续稿不入队，失败有限重试并显示可见错误', as
 test('整段复读会更换主题重试，只有合格新文案进入播放队列', async () => {
   const themes: string[] = []
   const supplied: string[] = []
+  const archived: { id: string; status: string; text: string }[] = []
   const controller = new ContinuousScriptController({
     generate: async request => {
       themes.push(request.theme)
@@ -188,6 +191,7 @@ test('整段复读会更换主题重试，只有合格新文案进入播放队�
     },
     onText: text => supplied.push(text),
     onState: () => {},
+    onAttempt: (request, output) => archived.push({ id: request.requestId, ...output }),
   })
   controller.start({ ...config, seedScript: '较短底稿。'.repeat(30) })
   controller.observe(true, false, 100)
@@ -195,6 +199,13 @@ test('整段复读会更换主题重试，只有合格新文案进入播放队�
   assert.equal(themes.length, 2)
   assert.notEqual(themes[0], themes[1])
   assert.ok(!supplied[0].includes('同一句话反复讲解'))
+  assert.deepEqual(
+    archived.map(item => item.status),
+    ['skipped', 'ready'],
+  )
+  assert.ok(archived[0].text.includes('同一句话反复讲解'))
+  assert.equal(archived[1].text, supplied[0])
+  assert.notEqual(archived[0].id, archived[1].id)
   controller.stop()
 })
 

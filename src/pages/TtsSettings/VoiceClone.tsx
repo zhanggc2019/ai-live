@@ -3,7 +3,6 @@ import { IPC_CHANNELS } from 'shared/ipcChannels'
 import type { TtsSettings, TtsVoice } from 'shared/voice'
 import { MAX_CLONE_AUDIO_BYTES, validateCloneAudio } from 'shared/voiceClone'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { useToast } from '@/hooks/useToast'
@@ -90,86 +89,82 @@ export function VoiceClone({ settings, hasKey, onCreated }: Props) {
   }
 
   return (
-    <Card id="voice-clone">
-      <CardHeader>
-        <CardTitle>克隆私人音色</CardTitle>
-        <CardDescription>
-          上传一段清晰的单人录音，保存后可在开播前选择和试听。目前由蓝云 TTS 提供此功能。
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        <div className="grid gap-4 sm:grid-cols-2">
-          <div className="space-y-2">
-            <Label htmlFor="clone-voice-name">音色名称</Label>
-            <Input
-              id="clone-voice-name"
-              value={name}
-              maxLength={80}
-              placeholder="例如：我的直播音色"
-              onChange={event => setName(event.target.value)}
-            />
-          </div>
-          <div className="space-y-2">
-            <Label htmlFor="clone-voice-file">参考录音</Label>
-            <Input
-              id="clone-voice-file"
-              type="file"
-              accept=".wav,.mp3,.ogg,.m4a,.aac"
-              disabled={uploading}
-              onChange={event => {
-                void chooseFile(event.currentTarget.files?.[0])
-                event.currentTarget.value = ''
-              }}
-            />
-          </div>
+    <div id="voice-clone" className="space-y-3">
+      <p className="text-sm text-muted-foreground">
+        上传单人录音。克隆完成后会选中新音色，可直接试听。
+      </p>
+      <div className="grid gap-3">
+        <div className="space-y-2">
+          <Label htmlFor="clone-voice-name">音色名称</Label>
+          <Input
+            id="clone-voice-name"
+            value={name}
+            maxLength={80}
+            placeholder="例如：我的直播音色"
+            onChange={event => setName(event.target.value)}
+          />
         </div>
-        <p className="text-xs text-muted-foreground">
-          支持 WAV、MP3、OGG、M4A、AAC，文件不超过 10
-          MiB。请使用本人或已获授权的声音，尽量选择无噪声的单人录音。
+        <div className="space-y-2">
+          <Label htmlFor="clone-voice-file">参考录音</Label>
+          <Input
+            id="clone-voice-file"
+            type="file"
+            accept=".wav,.mp3,.ogg,.m4a,.aac"
+            disabled={uploading}
+            onChange={event => {
+              void chooseFile(event.currentTarget.files?.[0])
+              event.currentTarget.value = ''
+            }}
+          />
+        </div>
+      </div>
+      <p className="text-xs text-muted-foreground">
+        支持 WAV、MP3、OGG、M4A、AAC，文件不超过 10
+        MiB。请使用本人或已获授权的声音，尽量选择无噪声的单人录音。
+      </p>
+      {selected && (
+        <p className="text-sm">
+          已选择：{selected.fileName} · {(selected.audio.length / 1024 / 1024).toFixed(2)} MiB
         </p>
-        {selected && (
-          <p className="text-sm">
-            已选择：{selected.fileName} · {(selected.audio.length / 1024 / 1024).toFixed(2)} MiB
-          </p>
-        )}
-        {created && (
-          <p className="text-sm text-primary" role="status">
-            已保存并选中：{created.name} · {created.id}
-          </p>
-        )}
-        {error && (
-          <p className="text-sm text-destructive" role="alert">
-            {error}
-          </p>
-        )}
-        <div className="flex gap-2">
+      )}
+      {created && (
+        <output className="block text-sm text-primary">
+          已保存并选中：{created.name} · {created.id}
+        </output>
+      )}
+      {error && (
+        <p className="text-sm text-destructive" role="alert">
+          {error}
+        </p>
+      )}
+      <div className="flex flex-wrap gap-2">
+        <Button
+          variant="outline"
+          disabled={uploading || !selected || !hasKey || settings.provider !== 'lanyun'}
+          onClick={() => void upload()}
+        >
+          {uploading ? '正在上传…' : '上传并克隆音色'}
+        </Button>
+        {uploading && (
           <Button
-            disabled={uploading || !selected || !hasKey || settings.provider !== 'lanyun'}
-            onClick={() => void upload()}
+            variant="outline"
+            onClick={() => {
+              if (requestRef.current)
+                void window.ipcRenderer
+                  .invoke(IPC_CHANNELS.tts.cancel, requestRef.current)
+                  .catch(() => {})
+            }}
           >
-            {uploading ? '正在上传…' : '上传并克隆音色'}
+            取消上传
           </Button>
-          {uploading && (
-            <Button
-              variant="outline"
-              onClick={() => {
-                if (requestRef.current)
-                  void window.ipcRenderer
-                    .invoke(IPC_CHANNELS.tts.cancel, requestRef.current)
-                    .catch(() => {})
-              }}
-            >
-              取消上传
-            </Button>
-          )}
-        </div>
-        {settings.provider !== 'lanyun' && (
-          <p className="text-xs text-muted-foreground">请在下方将 TTS 厂商切换为蓝云后上传。</p>
         )}
-        {settings.provider === 'lanyun' && !hasKey && (
-          <p className="text-xs text-muted-foreground">请先在下方保存蓝云 API Key。</p>
-        )}
-      </CardContent>
-    </Card>
+      </div>
+      {settings.provider !== 'lanyun' && (
+        <p className="text-xs text-muted-foreground">请在「厂商」选择蓝云 TTS 后上传。</p>
+      )}
+      {settings.provider === 'lanyun' && !hasKey && (
+        <p className="text-xs text-muted-foreground">请先在「厂商连接」保存蓝云 API Key。</p>
+      )}
+    </div>
   )
 }

@@ -1,5 +1,10 @@
 import { Loader2, Save, Sparkles, Square } from 'lucide-react'
-import { countScriptCharacters, saveLiveScript } from 'shared/liveScript'
+import {
+  countScriptCharacters,
+  hasScriptReferences,
+  type SavedLiveScript,
+  saveLiveScript,
+} from 'shared/liveScript'
 import AIModelInfo from '@/components/ai-chat/AIModelInfo'
 import { APIKeyDialog } from '@/components/ai-chat/APIKeyDialog'
 import {
@@ -28,6 +33,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { useAccounts } from '@/hooks/useAccounts'
 import { useToast } from '@/hooks/useToast'
 import { getVoiceConfig, useVoiceConfigStore } from '@/hooks/useVoiceConfig'
+import { archiveScriptHistory } from '@/services/voice/history'
 import {
   cancelScriptGeneration,
   generateScriptDraft,
@@ -58,25 +64,53 @@ export function ScriptGenerator({ onUseScript }: { onUseScript: (id: string) => 
   function save(asNew: boolean, useForBroadcast = false) {
     try {
       const current = getVoiceConfig(accountId)
+      const id = asNew ? undefined : current.scriptDraftId || undefined
       const savedScripts = saveLiveScript(current.savedScripts, {
-        id: asNew ? undefined : current.scriptDraftId || undefined,
+        id,
         title: current.scriptDraftTitle,
         content: current.generatedScript,
         productIntro: current.productIntro,
         referenceText: current.referenceText,
+        sourceScript:
+          current.sourceScript || (hasScriptReferences(current) ? '' : current.generatedScript),
         scriptRequirements: current.scriptRequirements,
       })
+      const previous = id && current.savedScripts.find(script => script.id === id)
+      if (previous) archiveSavedVersion(previous)
+      archiveSavedVersion(savedScripts[0])
       update(accountId, {
         savedScripts,
         scriptDraftId: savedScripts[0].id,
         scriptDraftTitle: savedScripts[0].title,
         generatedScript: savedScripts[0].content,
+        sourceScript: savedScripts[0].sourceScript ?? '',
       })
       if (useForBroadcast) onUseScript(savedScripts[0].id)
       toast.success(useForBroadcast ? '话术已保存并选用' : '话术与商品资料已保存')
     } catch (error) {
       toast.error(error instanceof Error ? error.message : '保存失败')
     }
+  }
+
+  /** 留档每次人工保存，首次覆盖旧版本时也把覆盖前的正文收进历史。 */
+  function archiveSavedVersion(script: SavedLiveScript) {
+    archiveScriptHistory(
+      {
+        id: `saved:${script.id}:${script.updatedAt ?? 'original'}`,
+        accountId,
+        title: script.title,
+        createdAt: Number.isFinite(Date.parse(script.updatedAt)) ? Date.parse(script.updatedAt) : 0,
+        kind: 'saved',
+        status: 'ready',
+        text: script.content,
+      },
+      {
+        productIntro: script.productIntro ?? '',
+        referenceText: script.referenceText,
+        sourceScript: script.sourceScript ?? script.content,
+        requirements: script.scriptRequirements ?? '',
+      },
+    )
   }
 
   /** 载入已保存条目的正文与商品资料，不改变本次播报选择。 */
@@ -89,6 +123,7 @@ export function ScriptGenerator({ onUseScript }: { onUseScript: (id: string) => 
         generatedScript: script.content,
         productIntro: script.productIntro ?? '',
         referenceText: script.referenceText ?? '',
+        sourceScript: script.sourceScript ?? script.content,
         scriptRequirements: script.scriptRequirements ?? '',
       })
   }
@@ -101,6 +136,7 @@ export function ScriptGenerator({ onUseScript }: { onUseScript: (id: string) => 
       generatedScript: '',
       productIntro: '',
       referenceText: '',
+      sourceScript: '',
       scriptRequirements: '',
     })
   }
@@ -123,6 +159,7 @@ export function ScriptGenerator({ onUseScript }: { onUseScript: (id: string) => 
         selected.title !== config.scriptDraftTitle ||
         (selected.productIntro ?? '') !== config.productIntro ||
         (selected.referenceText ?? '') !== config.referenceText ||
+        (selected.sourceScript ?? selected.content) !== config.sourceScript ||
         (selected.scriptRequirements ?? '') !== config.scriptRequirements),
   )
 
@@ -192,7 +229,30 @@ export function ScriptGenerator({ onUseScript }: { onUseScript: (id: string) => 
               placeholder="产品名称、规格与适用人群、已确认的价格和优惠、常见问题与参考回答……"
               onChange={event => update(accountId, { referenceText: event.target.value })}
             />
-            <p className="text-xs text-muted-foreground">随话术保存，可用于续稿和问答。</p>
+            <p className="text-xs text-muted-foreground">首篇、续稿和问答会参考这些资料。</p>
+          </div>
+          <div className="space-y-2 @min-[420px]:col-span-2">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <Label htmlFor="script-source">原话术（选填）</Label>
+              {!config.sourceScript.trim() && draft.trim() && !busy && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => update(accountId, { sourceScript: draft })}
+                >
+                  用当前正文作原稿
+                </Button>
+              )}
+            </div>
+            <Textarea
+              id="script-source"
+              value={config.sourceScript}
+              maxLength={20000}
+              disabled={busy}
+              className="min-h-16"
+              placeholder="粘贴原来的文案。改写会参考里面的卖点和产品特色。"
+              onChange={event => update(accountId, { sourceScript: event.target.value })}
+            />
           </div>
         </div>
         <div className="flex flex-wrap items-center justify-between gap-2">
@@ -210,9 +270,9 @@ export function ScriptGenerator({ onUseScript }: { onUseScript: (id: string) => 
               {generation?.status === 'cancelling' ? '正在停止…' : '停止生成'}
             </Button>
           ) : (
-            <Button disabled={!config.productIntro.trim()} onClick={generate}>
+            <Button disabled={!hasScriptReferences(config)} onClick={generate}>
               <Sparkles className="h-4 w-4" />
-              生成约 3000 字话术
+              {config.sourceScript.trim() ? '按原话术改写' : '生成约 3000 字话术'}
             </Button>
           )}
         </div>
@@ -245,10 +305,10 @@ export function ScriptGenerator({ onUseScript }: { onUseScript: (id: string) => 
             onChange={event => update(accountId, { generatedScript: event.target.value })}
           />
           {busy && (
-            <p className="flex items-center gap-2 text-sm text-muted-foreground" role="status">
+            <output className="flex items-center gap-2 text-sm text-muted-foreground">
               <Loader2 className="h-4 w-4 animate-spin" />
               正在生成话术，可以切换页面；已生成 {countScriptCharacters(draft)} 字。
-            </p>
+            </output>
           )}
           {generation?.error && (
             <p role="alert" className="text-sm text-destructive">

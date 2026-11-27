@@ -19,6 +19,23 @@ test('话术提示词要求约3000字、可直接朗读，并保留产品事实�
   assert.equal(countScriptCharacters('你 好\n😀'), 3)
 })
 
+test('首篇按原话术与资料改写，优先确认的数值，开口就是具体场景', () => {
+  const original = '杯子是蓝色的，杯盖可以拆洗。容量为 450 毫升。'
+  const messages = buildLiveScriptMessages({
+    productIntro: '',
+    referenceText: '已确认容量为 500 毫升。',
+    sourceScript: original,
+    requirements: '像和朋友聊天',
+  })
+  const context = JSON.parse(messages[1].content)
+  assert.equal(context.原话术, original)
+  assert.equal(context.补充商品资料, '已确认容量为 500 毫升。')
+  assert.match(messages[0].content, /资料与原话术冲突时，以商品资料为准/)
+  assert.match(messages[0].content, /从一个具体场景开口/)
+  assert.match(messages[0].content, /保留原稿中有依据的卖点/)
+  assert.doesNotMatch(messages[0].content, /2700 至 3300/)
+})
+
 test('话术标题与正文发生明显串稿时阻止再次保存和播报', () => {
   const study = saveLiveScript([], {
     title: '自习室直播',
@@ -68,6 +85,7 @@ test('保存话术时保留对应商品资料，切换版本不会继承另一�
     content: '今天带大家看看北方周庄。',
     productIntro: '北方周庄景区',
     referenceText: '地址与开放时间以景区公告为准',
+    sourceScript: '原先的景区讲解稿。',
     scriptRequirements: '自然介绍景区',
   })
   assert.equal(first[0].productIntro, '北方周庄景区')
@@ -79,6 +97,7 @@ test('保存话术时保留对应商品资料，切换版本不会继承另一�
   })
   assert.equal(updated[0].productIntro, '北方周庄景区')
   assert.equal(updated[0].scriptRequirements, '自然介绍景区')
+  assert.equal(updated[0].sourceScript, '原先的景区讲解稿。')
 })
 
 test('长话术独立收集文本流与截断状态，分配足够的输出预算', async () => {

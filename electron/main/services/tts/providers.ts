@@ -1,4 +1,12 @@
-import type { SpeechAudio, TtsProviderId, TtsSettings, TtsVoice } from '../../../../shared/voice'
+import {
+  classifyLanyunEmotion,
+  LANYUN_EMOTION_DEFAULTS,
+  resolveLanyunEmotionMode,
+  type SpeechAudio,
+  type TtsProviderId,
+  type TtsSettings,
+  type TtsVoice,
+} from '../../../../shared/voice'
 import { validateCloneAudio } from '../../../../shared/voiceClone'
 
 const MAX_AUDIO_BYTES = 16 * 1024 * 1024
@@ -79,6 +87,11 @@ export function validateTtsSettings(settings: TtsSettings, requireVoice = true):
       throw new Error('蓝云用户 ID 请使用不超过 256 位的英文字母、数字或可打印符号')
     if (!['ZH', 'EN', 'JA', 'ES', 'AR'].includes(settings.language ?? 'ZH')) {
       throw new Error('请选择蓝云支持的语言')
+    }
+    if (
+      !['original', 'voice', 'natural', 'expressive'].includes(resolveLanyunEmotionMode(settings))
+    ) {
+      throw new Error('请选择有效的蓝云语气起伏模式')
     }
     const rate = settings.speechRate ?? 1
     const silence = settings.intervalSilence ?? 120
@@ -452,6 +465,42 @@ export async function uploadLanyunVoice(
   }
 }
 
+const LANYUN_EMOTION_MIX = {
+  reminder: { happy: 0, calm: 0.45 },
+  question: { happy: 0.2, calm: 0.12 },
+  emphasis: { happy: 0.34, calm: 0.16 },
+  welcome: { happy: 0.4, calm: 0.08 },
+} as const
+
+/** 按当句的表达目的选择情感和强度，普通讲解继续沿用原音色。 */
+function lanyunEmotionParams(text: string, settings: TtsSettings) {
+  const mode = resolveLanyunEmotionMode(settings)
+  if (mode === 'original') return { use_emo_text: false }
+  if (mode === 'voice') {
+    const description = settings.instructions.trim()
+    return description
+      ? { use_emo_text: true, emo_text: description, emo_alpha: 1 }
+      : { use_emo_text: false }
+  }
+
+  const tone = classifyLanyunEmotion(text)
+  if (!tone) return { use_emo_text: false }
+  const strength =
+    settings.lanyunEmotionStrengths?.[mode]?.[tone] ?? LANYUN_EMOTION_DEFAULTS[mode][tone]
+  if (!Number.isFinite(strength) || strength < 0 || strength > 1) {
+    throw new Error('蓝云语气强度需在 0 到 1 之间')
+  }
+  if (strength === 0) return { use_emo_text: false }
+
+  // 仅加入少量开心或平静，避免用惊讶来模拟普通问句或强调。
+  const { happy, calm } = LANYUN_EMOTION_MIX[tone]
+  return {
+    use_emo_text: false,
+    emo_vector: [happy, 0, 0, 0, 0, 0, 0, calm],
+    emo_alpha: strength,
+  }
+}
+
 export class LanyunTtsProvider implements TtsProvider {
   /** 原生接口同步合成后下载录音；下载仅允许同源且禁止重定向，避免泄露鉴权头。 */
   async synthesize(
@@ -479,10 +528,7 @@ export class LanyunTtsProvider implements TtsProvider {
         duration_factor: 1,
         interval_silence: settings.intervalSilence ?? 120,
         use_random: false,
-        use_emo_text: Boolean(settings.instructions.trim()),
-        ...(settings.instructions.trim()
-          ? { emo_text: settings.instructions.trim(), emo_alpha: 1 }
-          : {}),
+        ...lanyunEmotionParams(text, settings),
       }),
     })
     const data = await readLanyunJson(response)

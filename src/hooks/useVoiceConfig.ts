@@ -21,6 +21,7 @@ export interface VoiceConfig {
   openingScript: string
   loopScript: string
   referenceText: string
+  sourceScript: string
   loopEnabled: boolean
   gapMs: number
   prebufferSeconds: number
@@ -29,6 +30,14 @@ export interface VoiceConfig {
   speechPacing: SpeechPacingSettings
   provider: TtsProviderId
   providers: Record<TtsProviderId, TtsSettings>
+}
+
+type VoiceConfigPatch = Partial<Omit<VoiceConfig, 'speechPacing'>> & {
+  speechPacing?: Partial<SpeechPacingSettings>
+}
+
+type StoredVoiceConfig = Omit<VoiceConfig, 'speechPacing'> & {
+  speechPacing?: Partial<SpeechPacingSettings> & { customRange?: true }
 }
 
 /** 每个账号独立保存话术、声音及输出设备，密钥由主进程加密保管。 */
@@ -45,6 +54,7 @@ export function createVoiceConfig(): VoiceConfig {
     openingScript: '',
     loopScript: '',
     referenceText: '',
+    sourceScript: '',
     loopEnabled: false,
     gapMs: 150,
     prebufferSeconds: 30,
@@ -62,8 +72,8 @@ export function createVoiceConfig(): VoiceConfig {
 }
 
 interface VoiceConfigStore {
-  contexts: Record<string, VoiceConfig>
-  update: (accountId: string, patch: Partial<VoiceConfig>) => void
+  contexts: Record<string, StoredVoiceConfig>
+  update: (accountId: string, patch: VoiceConfigPatch) => void
   updateProvider: (accountId: string, provider: TtsProviderId, patch: Partial<TtsSettings>) => void
 }
 
@@ -72,15 +82,22 @@ export const useVoiceConfigStore = create<VoiceConfigStore>()(
     (set, get) => ({
       contexts: {},
       /** 合并当前账号的非敏感配置。 */
-      update: (accountId, patch) =>
+      update: (accountId, { speechPacing, ...patch }) =>
         set(state => {
           const current = getVoiceConfig(accountId)
+          let savedPacing = state.contexts[accountId]?.speechPacing
+          if (speechPacing) {
+            savedPacing = { ...savedPacing, ...speechPacing }
+            if (speechPacing.minRate !== undefined || speechPacing.maxRate !== undefined)
+              savedPacing.customRange = true
+          }
           return {
             contexts: {
               ...state.contexts,
               [accountId]: {
                 ...current,
                 ...patch,
+                speechPacing: savedPacing,
               },
             },
           }
@@ -104,13 +121,27 @@ export const useVoiceConfigStore = create<VoiceConfigStore>()(
 export function getVoiceConfig(accountId: string): VoiceConfig {
   const defaults = createVoiceConfig()
   const stored = useVoiceConfigStore.getState().contexts[accountId]
+  const oldDraft =
+    stored?.sourceScript === undefined
+      ? stored?.savedScripts?.find(script => script.id === stored.scriptDraftId)
+      : undefined
+  const savedPacing = stored?.speechPacing
+  // 旧版会随账号一起保存原默认范围。新版仅在手动调过滑块时标记自定义范围。
+  const legacyDefault =
+    !savedPacing?.customRange &&
+    savedPacing?.minRate === DEFAULT_SPEECH_PACING.minRate &&
+    savedPacing.maxRate === DEFAULT_SPEECH_PACING.maxRate
   return {
     ...defaults,
     ...stored,
+    sourceScript: stored?.sourceScript ?? oldDraft?.sourceScript ?? oldDraft?.content ?? '',
     prebufferSeconds: [0, 15, 30, 45].includes(stored?.prebufferSeconds)
       ? stored.prebufferSeconds
       : 30,
-    speechPacing: normalizeSpeechPacing(stored?.speechPacing),
+    speechPacing: normalizeSpeechPacing(
+      legacyDefault ? { ...savedPacing, minRate: undefined, maxRate: undefined } : savedPacing,
+      stored?.provider,
+    ),
     providers: {
       mimo: { ...defaults.providers.mimo, ...stored?.providers?.mimo },
       lanyun: { ...defaults.providers.lanyun, ...stored?.providers?.lanyun },

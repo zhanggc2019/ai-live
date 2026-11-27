@@ -1,4 +1,10 @@
-import type { TtsSettings } from './voice'
+import {
+  classifyLanyunEmotion,
+  resolveLanyunEmotionMode,
+  splitSpeechText,
+  type TtsProviderId,
+  type TtsSettings,
+} from './voice'
 
 export interface SpeechPacingSettings {
   enabled: boolean
@@ -28,12 +34,19 @@ function safeRate(value: unknown, fallback: number): number {
     : fallback
 }
 
-/** 补齐旧账号缺少的节奏配置，并保证上下限有序。 */
+/** 按厂商补齐节奏设置，并保证上下限有序。 */
 export function normalizeSpeechPacing(
   stored?: Partial<SpeechPacingSettings> | null,
+  provider?: TtsProviderId,
 ): SpeechPacingSettings {
-  const min = safeRate(stored?.minRate, DEFAULT_SPEECH_PACING.minRate)
-  const max = safeRate(stored?.maxRate, DEFAULT_SPEECH_PACING.maxRate)
+  const min = safeRate(
+    stored?.minRate,
+    provider === 'lanyun' ? 0.93 : DEFAULT_SPEECH_PACING.minRate,
+  )
+  const max = safeRate(
+    stored?.maxRate,
+    provider === 'lanyun' ? 1.07 : DEFAULT_SPEECH_PACING.maxRate,
+  )
   return {
     enabled: typeof stored?.enabled === 'boolean' ? stored.enabled : true,
     minRate: Math.min(min, max),
@@ -54,44 +67,88 @@ function requirementsBias(requirements: string): number {
   return (Number(fast) - Number(slow)) * 0.2
 }
 
-/** 按内容与直播间要求确定单句倍率；不发起网络请求，相同文本和配置可稳定复用缓存。 */
+/** 提取与配置无关的内容倾向，保持分段和调速对同一句话的判断一致。 */
+function contentPacing(text: string): { score: number; reason: string } {
+  if (
+    /注意|请留意|提醒|务必|切勿|禁止|不适合|不建议|不包含|除外|以.{0,12}为准|使用条件|适用范围/.test(
+      text,
+    )
+  ) {
+    return { score: -0.85, reason: '注意事项，放慢讲清' }
+  }
+  // “平一点”“快一点”等程度补语常见于口语。保留“一点半”“一点钟”等明确时间。
+  const numericText = text.replace(
+    /(?<=[大小高低宽窄远近快慢轻重深浅长短薄厚软硬松紧平稳暖凉冷热亮暗早晚多少顺些])一点(?!半|钟|[零〇一二两三四五六七八九十]+分)/gu,
+    '',
+  )
+  if (
+    /\d|[零〇一二两三四五六七八九十百千万亿半]+(?:元|块|折|毫升|升|克|斤|公斤|厘米|毫米|米|度|小时|分钟|个月|天|年|点)|百分之|价格|费用|收费|退款|有效期/.test(
+      numericText,
+    )
+  ) {
+    return { score: -0.7, reason: '数字与交易信息，放慢讲清' }
+  }
+  if (/参数|规格|尺寸|材质|容量|步骤|首先|其次|最后|分别/.test(text)) {
+    return { score: -0.4, reason: '参数与步骤，稳步讲解' }
+  }
+  if (/别着急|不用担心|不必担心|放心|慢慢来|放松|陪伴/.test(text)) {
+    return { score: -0.35, reason: '安抚与陪伴，舒缓表达' }
+  }
+  if (/欢迎|大家好|朋友们好|感谢|谢谢|一起来|一起看看|聊一聊|聊聊|告诉我|评论区|留言/.test(text)) {
+    return { score: 0.5, reason: '欢迎与互动，稍快表达' }
+  }
+  if (/[?？]/.test(text)) return { score: 0.2, reason: '提问互动，轻快表达' }
+  return { score: 0, reason: '自然讲解' }
+}
+
+/** 蓝云同一次合成可读出相邻短句的承接，限制长度给评论插播留出机会。 */
+export function splitSpeechForSynthesis(text: string, provider: TtsSettings): string[] {
+  if (provider.provider !== 'lanyun') return splitSpeechText(text)
+  const mode = resolveLanyunEmotionMode(provider)
+  const adaptiveEmotion = mode === 'natural' || mode === 'expressive'
+  const segments: string[] = []
+  for (const line of text.split(/\r\n?|\n/u)) {
+    const sentences = splitSpeechText(line)
+    for (let index = 0; index < sentences.length; index++) {
+      const current = sentences[index]
+      const next = sentences[index + 1]
+      if (
+        !next ||
+        !/[。！？.!?][”’」』"']*$/u.test(current) ||
+        /^(?:换个(?:话题|角度|场景)|咱们换|接下来(?:聊|说|看)|再来(?:说说|聊聊)|说回)/u.test(
+          next,
+        ) ||
+        (adaptiveEmotion && (classifyLanyunEmotion(current) || classifyLanyunEmotion(next)))
+      ) {
+        segments.push(current)
+        continue
+      }
+      const currentScore = contentPacing(current).score
+      const nextScore = contentPacing(next).score
+      const separator = /[。！？][”’」』"']*$/u.test(current) ? '' : ' '
+      const combined = current + separator + next
+      // 数字和注意事项各留出停顿，节奏倾向差异明显的短句也分别朗读。
+      if (
+        Math.min(currentScore, nextScore) > -0.7 &&
+        Math.abs(currentScore - nextScore) < 0.4 &&
+        Array.from(combined).length <= 48
+      ) {
+        segments.push(combined)
+        index++
+      } else segments.push(current)
+    }
+  }
+  return segments
+}
+
+/** 按内容与直播间要求确定每段倍率；相同文本和配置可稳定复用缓存。 */
 export function planSpeechPacing(
   text: string,
   settings: SpeechPacingSettings,
   fallbackRequirements = '',
 ): SpeechPacingPlan {
   const config = normalizeSpeechPacing(settings)
-  let score = 0
-  let reason = '自然讲解'
-  if (
-    /注意|请留意|提醒|务必|切勿|禁止|不适合|不建议|不包含|除外|以.{0,12}为准|使用条件|适用范围/.test(
-      text,
-    )
-  ) {
-    score = -0.85
-    reason = '注意事项，放慢讲清'
-  } else if (
-    /\d|[零〇一二两三四五六七八九十百千万亿半]+(?:元|块|折|毫升|升|克|斤|公斤|厘米|毫米|米|度|小时|分钟|个月|天|年|点)|百分之|价格|费用|收费|退款|有效期/.test(
-      text,
-    )
-  ) {
-    score = -0.7
-    reason = '数字与交易信息，放慢讲清'
-  } else if (/参数|规格|尺寸|材质|容量|步骤|首先|其次|最后|分别/.test(text)) {
-    score = -0.4
-    reason = '参数与步骤，稳步讲解'
-  } else if (/别着急|不用担心|不必担心|放心|慢慢来|放松|陪伴/.test(text)) {
-    score = -0.35
-    reason = '安抚与陪伴，舒缓表达'
-  } else if (
-    /欢迎|大家好|朋友们好|感谢|谢谢|一起来|一起看看|聊一聊|聊聊|告诉我|评论区|留言/.test(text)
-  ) {
-    score = 0.5
-    reason = '欢迎与互动，稍快表达'
-  } else if (/[?？]/.test(text)) {
-    score = 0.2
-    reason = '提问互动，轻快表达'
-  }
+  let { score, reason } = contentPacing(text)
   if (Array.from(text).length > 70 || (text.match(/[，,、；;]/g)?.length ?? 0) >= 3) {
     score -= 0.15
     reason += '；长句稍慢'
@@ -105,7 +162,7 @@ export function planSpeechPacing(
   return { rate: Math.min(config.maxRate, Math.max(config.minRate, rate)), reason }
 }
 
-/** 为单句选择唯一的调速位置：蓝云使用原生合成倍率，其他厂商使用保音高播放。 */
+/** 为每段选择唯一的调速位置：蓝云使用原生合成倍率，其他厂商使用保音高播放。 */
 export function prepareSpeechPacing(
   text: string,
   provider: TtsSettings,

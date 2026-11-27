@@ -5,6 +5,7 @@ import {
   OpenAICompatibleTtsProvider,
   validateTtsSettings,
 } from '../electron/main/services/tts/providers'
+import { splitSpeechForSynthesis } from '../shared/speechPacing'
 import { splitSpeechText, TTS_PRESETS } from '../shared/voice'
 import { VoiceQueue } from '../src/services/voice/VoiceQueue'
 
@@ -57,24 +58,26 @@ test('切句保留价格、中文标点与跨行内容，长句按 Unicode 字�
   assert.equal(chunks.join(''), '商品介绍'.repeat(200))
 })
 
-test('回复在完整句子之间优先插播，开场不会重播', async () => {
+test('回复在蓝云的完整合成段之间优先插播，开场不会重播', async () => {
   const played: string[] = []
   const first = deferred<void>()
+  const opening = '你平时把杯子放哪儿？要是放小包，先看看底有多宽。'
+  const next = '想看杯盖的话，我再拿近一点。'
   const queue = new VoiceQueue<string>({
     synthesize: async text => text,
     play: async text => {
       played.push(text)
-      if (text === '开场一') await first.promise
+      if (text === opening) await first.promise
     },
     onChange: () => {},
   })
-  queue.start(['开场一', '开场二'], [], 0)
+  queue.start(splitSpeechForSynthesis(opening + next, TTS_PRESETS.lanyun), [], 0)
   await until(() => played.length === 1)
   queue.enqueue(['观众回答'])
-  assert.deepEqual(played, ['开场一'])
+  assert.deepEqual(played, [opening])
   first.resolve()
   await until(() => queue.getState().phase === 'idle')
-  assert.deepEqual(played, ['开场一', '观众回答', '开场二'])
+  assert.deepEqual(played, [opening, '观众回答', next])
   queue.stop()
 })
 

@@ -3,7 +3,7 @@ import { mkdir, readFile } from 'node:fs/promises'
 import { createServer } from 'node:http'
 import path from 'node:path'
 import { chromium } from 'playwright'
-import { checkSpeechPacing } from './speech-pacing-ui.mjs'
+import { checkSpeechPacing, openVoiceSetting } from './speech-pacing-ui.mjs'
 
 /** 生成静音 WAV，让浏览器实际走解码与播放流程，不调用付费语音服务。 */
 function makeSilentWav(seconds = 0.1) {
@@ -156,16 +156,20 @@ try {
               const sentence = index =>
                 `${marker}${String.fromCharCode(0x4e00 + index)}类使用场景可以从实际需要出发，看看哪些细节更加合适。`
               return {
-                text: Array.from({ length: Math.ceil(request.targetCharacters / 32) }, (_, index) =>
-                  sentence(index),
-                ).join(''),
+                text:
+                  (window.voiceTest.continuations.length === 1 &&
+                    window.voiceTest.firstContinuationText) ||
+                  (window.voiceTest.continuationPrefix ?? '') +
+                    Array.from({ length: Math.ceil(request.targetCharacters / 32) }, (_, index) =>
+                      sentence(index),
+                    ).join(''),
                 cancelled: false,
                 truncated: false,
               }
             }
-            const whole = `${request.productIntro}，请结合自己的使用习惯选择。`
-              .repeat(300)
-              .slice(0, 3000)
+            const whole =
+              window.voiceTest.draftText ??
+              `${request.productIntro}，请结合自己的使用习惯选择。`.repeat(300).slice(0, 3000)
             let text = ''
             for (let offset = 0; offset < whole.length; offset += 100) {
               await new Promise(resolve => setTimeout(resolve, 70))
@@ -246,7 +250,8 @@ try {
   await page.waitForLoadState('networkidle')
   await page.screenshot({ path: 'test-results/voice-initial.png' })
   if (process.argv.includes('--history')) {
-    await page.addInitScript(() => {
+    const pair = '你平时把杯子放哪儿？要是放小包，先看看底有多宽。'
+    await page.addInitScript(pairedText => {
       if (sessionStorage.getItem('history-fixture')) return
       sessionStorage.setItem('history-fixture', 'ready')
       localStorage.setItem(
@@ -255,12 +260,14 @@ try {
           state: {
             contexts: {
               default: {
+                provider: 'lanyun',
+                providers: { lanyun: { voice: 'test-history-voice' } },
                 selectedScriptId: 'history',
                 savedScripts: [
                   {
                     id: 'history',
                     title: '水杯直播存档',
-                    content: '第一句介绍水杯的容量。第二句介绍日常用法。',
+                    content: `${pairedText}\n这个杯子能装500毫升。`,
                   },
                 ],
                 openingScript: '欢迎来看看这款水杯。',
@@ -279,7 +286,7 @@ try {
           version: 0,
         }),
       )
-    })
+    }, pair)
     await page.reload()
     await page.getByRole('link', { name: '播报历史', exact: true }).click({ timeout: 3000 })
     await page.getByText('还没有播报历史').waitFor()
@@ -292,6 +299,7 @@ try {
 
     await page.evaluate(() => {
       window.voiceTest.completed = 0
+      window.voiceTest.continuationPrefix = '杯底平一点。放桌上也稳。\n'
       const play = HTMLMediaElement.prototype.play
       HTMLMediaElement.prototype.play = function () {
         this.addEventListener(
@@ -305,20 +313,31 @@ try {
       }
     })
     await page.getByRole('button', { name: '开始播报', exact: true }).click()
+    await page.waitForFunction(() =>
+      window.voiceTest.requests.some(request => request.text === '杯底平一点。放桌上也稳。'),
+    )
     await page.waitForFunction(() => window.voiceTest.completed >= 3)
     await page.getByRole('button', { name: '结束播报', exact: true }).click()
+    const requests = await page.evaluate(() => window.voiceTest.requests)
+    const paired = requests.filter(request => request.text === pair)
+    assert.equal(paired.length, 1)
+    assert.equal(paired[0].settings.speechRate, 1.01)
+    assert.equal(
+      requests.find(request => request.text === '这个杯子能装500毫升。')?.settings.speechRate,
+      0.95,
+    )
     await page.getByRole('link', { name: '播报历史', exact: true }).click()
     await page.getByText('水杯直播存档', { exact: true }).first().waitFor()
-    await page.getByText('第一句介绍水杯的容量。', { exact: true }).waitFor()
-    await page.getByText('第二句介绍日常用法。', { exact: true }).waitFor()
+    await page.getByText(pair, { exact: true }).waitFor()
+    await page.getByText('这个杯子能装500毫升。', { exact: true }).waitFor()
     await page
       .getByText(/音频时长 0.1 秒 · 合成耗时 \d+\.\d{2} 秒/)
       .first()
       .waitFor()
     await page.reload()
-    await page.getByText('第二句介绍日常用法。', { exact: true }).waitFor()
+    await page.getByText(pair, { exact: true }).waitFor()
 
-    await page.getByRole('link', { name: '播放第 3 段', exact: true }).click()
+    await page.getByRole('link', { name: '播放第 2 段', exact: true }).click()
     const downloadLink = page.getByRole('link', { name: '下载音频' })
     await downloadLink.waitFor()
     assert.match(await downloadLink.getAttribute('href'), /^blob:/)
@@ -327,7 +346,7 @@ try {
     assert.match((await download).suggestedFilename(), /\.wav$/)
     await page.waitForFunction(() => window.voiceTest.playback.length > 0)
     assert.equal(await page.evaluate(() => window.voiceTest.requests.length), 0)
-    assert.match(page.url(), /clip=3/)
+    assert.match(page.url(), /clip=2/)
     await page.reload()
     await downloadLink.waitFor()
     assert.equal(await page.locator('audio').evaluate(audio => audio.paused), true)
@@ -342,7 +361,7 @@ try {
     await page.getByText('还没有播报历史').waitFor()
     assert.deepEqual(errors, [])
     console.log(
-      'HISTORY UI CHECKS PASSED: live playback, persistence, replay, audio download, deletion',
+      'HISTORY UI CHECKS PASSED: grouped live script and continuation, persistence, replay, audio download, deletion',
     )
   } else if (process.argv.includes('--updates')) {
     const update = page.getByRole('dialog')
@@ -368,8 +387,71 @@ try {
     console.log(
       'UPDATE UI CHECKS PASSED: startup notes, download progress, reopen, explicit install',
     )
+  } else if (process.argv.includes('--settings-layout')) {
+    await page.setViewportSize({ width: 1280, height: 800 })
+    await page.getByRole('link', { name: '音色克隆', exact: true }).click()
+    const play = page.getByRole('button', { name: '合成并播放', exact: true })
+    await play.waitFor()
+    assert.equal(await page.getByLabel('试听文字').isVisible(), true)
+    assert.equal(await page.getByRole('switch', { name: '动态语速' }).isVisible(), true)
+    assert.equal(await page.locator('summary').count(), 5)
+    assert.equal(await page.locator('details[open]').count(), 0)
+    assert.equal(await page.locator('#tts-key').isVisible(), false)
+    assert.equal(await page.locator('#clone-voice-file').isVisible(), false)
+    assert.equal(await page.locator('#tts-style').isVisible(), false)
+    assert.equal(await page.locator('#tts-output').isVisible(), false)
+    await page.getByRole('button', { name: '配置 API Key', exact: true }).click()
+    await page.locator('#tts-key').waitFor()
+    assert.equal(
+      await page.locator('#tts-key').evaluate(field => field === document.activeElement),
+      true,
+    )
+    await page.locator('#tts-key').fill('layout-test-key')
+    await page.getByRole('button', { name: '保存密钥', exact: true }).click()
+    await page.getByText('API Key · 已保存', { exact: true }).waitFor()
+    const connection = await openVoiceSetting(page, '厂商连接')
+    await connection.press('Enter')
+    assert.equal(await page.locator('#tts-key').isVisible(), false)
+    await play.click()
+    await page.getByText('默认账号 · 等待回复', { exact: true }).waitFor()
+    await page.getByRole('button', { name: '停止语音', exact: true }).click()
+    await page.locator('#tts-provider').click()
+    await page.getByRole('option', { name: '蓝云 TTS（IndexTTS-2.5）', exact: true }).click()
+    await page.getByRole('button', { name: '配置 API Key', exact: true }).click()
+    await page.locator('#tts-key').fill('layout-test-lanyun-key')
+    await page.getByRole('button', { name: '保存密钥', exact: true }).click()
+    await page.getByText('API Key · 已保存', { exact: true }).waitFor()
+    await connection.press('Enter')
+    await page.getByLabel('音色 ID', { exact: true }).fill('layout-voice')
+    assert.equal(await page.getByRole('slider', { name: '最低语速' }).inputValue(), '0.93')
+    await page.getByText('TTS 密钥已加密保存', { exact: true }).first().waitFor({ state: 'hidden' })
+    await page.locator('main').evaluate(main => {
+      main.scrollTop = 0
+    })
+    await page.screenshot({ path: 'test-results/voice-settings-1280.png' })
+    await page.setViewportSize({ width: 960, height: 780 })
+    const output = await openVoiceSetting(page, '声音输出')
+    await page.locator('#tts-output').waitFor()
+    assert.equal(await page.locator('#tts-volume').inputValue(), '0.8')
+    await output.press('Enter')
+    await page.locator('main').evaluate(main => {
+      main.scrollTop = 0
+    })
+    const pageWidth = await page
+      .locator('main')
+      .evaluate(main => ({ scroll: main.scrollWidth, client: main.clientWidth }))
+    assert.equal(pageWidth.scroll, pageWidth.client)
+    const viewport = await page.locator('main').boundingBox()
+    const playButton = await play.boundingBox()
+    assert.ok(playButton.y + playButton.height <= viewport.y + viewport.height)
+    await page.screenshot({ path: 'test-results/voice-settings-960.png' })
+    assert.deepEqual(errors, [])
+    console.log(
+      'VOICE SETTINGS LAYOUT PASSED: common controls, collapsed sections, key shortcut, keyboard and playback',
+    )
   } else if (process.argv.includes('--clone')) {
     await page.getByRole('link', { name: '音色克隆', exact: true }).click()
+    await openVoiceSetting(page, '克隆私人音色')
     const upload = page.getByRole('button', { name: '上传并克隆音色', exact: true })
     const file = page.locator('#clone-voice-file')
     await file.setInputFiles({
@@ -408,6 +490,7 @@ try {
     await page.getByText(/已选择：sample.wav/).waitFor()
     await page.locator('#tts-provider').click()
     await page.getByRole('option', { name: '蓝云 TTS（IndexTTS-2.5）', exact: true }).click()
+    await openVoiceSetting(page, '厂商连接')
     await page.getByLabel('用户 ID（私人音色需要）', { exact: true }).fill('owner-001')
     await page.locator('#tts-key').fill('test-clone-key')
     await page.getByRole('button', { name: '保存密钥', exact: true }).click()
@@ -444,6 +527,7 @@ try {
     assert.equal(await page.evaluate(() => window.voiceTest.requests.length), 0)
     await page.getByRole('link', { name: '音色克隆', exact: true }).click()
     assert.equal(await page.locator('#tts-voice').innerText(), '茉莉')
+    await openVoiceSetting(page, '厂商连接')
     await page.locator('#tts-key').fill('test-mimo-key')
     await page.getByRole('button', { name: '保存密钥', exact: true }).click()
     await page.getByRole('link', { name: '直播话术', exact: true }).click()
@@ -455,6 +539,7 @@ try {
     await page.getByRole('link', { name: '音色克隆', exact: true }).click()
     await page.locator('#tts-provider').click()
     await page.getByRole('option', { name: '蓝云 TTS（IndexTTS-2.5）', exact: true }).click()
+    await openVoiceSetting(page, '厂商连接')
     await page.locator('#tts-key').fill('test-lanyun-key')
     await page.getByRole('button', { name: '保存密钥', exact: true }).click()
     await page.getByLabel('用户 ID（私人音色需要）', { exact: true }).fill('user-001')
@@ -718,6 +803,7 @@ try {
     await page.locator('#selected-live-script').click()
     await page.getByRole('option', { name: '第三方模型水杯话术', exact: true }).click()
     await page.getByRole('link', { name: '音色克隆', exact: true }).click()
+    await openVoiceSetting(page, '厂商连接')
     await page.locator('#tts-key').fill('test-provider-tts-key')
     await page.getByRole('button', { name: '保存密钥', exact: true }).click()
     await page.getByText('API Key · 已保存', { exact: true }).waitFor()
@@ -760,6 +846,139 @@ try {
     assert.deepEqual(errors, [])
     console.log(
       'PROVIDER UI CHECKS PASSED: old catalog, Qwen selection, custom endpoint, validation, persistence, third-party draft/continuation, independent reply settings',
+    )
+  } else if (process.argv.includes('--script-history')) {
+    const original = '这款水杯的杯盖可以拆下来洗。容量是450毫升。'
+    const facts = '确认容量为500毫升。'
+    await page.evaluate(
+      async ({ original, facts }) => {
+        localStorage.setItem(
+          'voice-config',
+          JSON.stringify({
+            version: 1,
+            state: {
+              contexts: {
+                default: {
+                  savedScripts: [
+                    { id: 'original', title: '水杯话术', content: original, referenceText: facts },
+                  ],
+                  scriptDraftId: 'original',
+                  scriptDraftTitle: '水杯话术',
+                  generatedScript: original,
+                  referenceText: facts,
+                  prebufferSeconds: 0,
+                },
+              },
+            },
+          }),
+        )
+        // 模拟升级前的播报历史库，新增文案历史时应保留原场次。
+        await new Promise((resolve, reject) => {
+          const request = indexedDB.open('ai-live-voice-history', 1)
+          request.onupgradeneeded = () => {
+            const db = request.result
+            db.createObjectStore('sessions', { keyPath: 'id' }).createIndex(
+              'accountId',
+              'accountId',
+            )
+            db.createObjectStore('clips')
+            db.createObjectStore('audio')
+          }
+          request.onerror = () => reject(request.error)
+          request.onsuccess = () => {
+            const db = request.result
+            const tx = db.transaction('sessions', 'readwrite')
+            tx.objectStore('sessions').put({
+              id: 'old-audio',
+              accountId: 'default',
+              title: '升级前的播报',
+              mode: 'local',
+              startedAt: Date.now(),
+              clipCount: 1,
+            })
+            tx.oncomplete = () => {
+              db.close()
+              resolve()
+            }
+            tx.onabort = () => {
+              db.close()
+              reject(tx.error)
+            }
+          }
+        })
+      },
+      { original, facts },
+    )
+    await page.reload()
+    const source = page.getByLabel('原话术（选填）', { exact: true })
+    const rewrite = page.getByRole('button', { name: '按原话术改写', exact: true })
+    await rewrite.waitFor()
+    assert.equal(await source.inputValue(), original)
+
+    const first = '拿水杯出门，回来一冲就行。这个杯盖可以拆下来洗。'
+    const second = '你平时喝多少水？这只水杯可以装500毫升，杯盖还能拿下来洗。'
+    for (const text of [first, second]) {
+      await page.evaluate(text => {
+        window.voiceTest.draftText = text
+      }, text)
+      await rewrite.click()
+      await page.waitForFunction(
+        text => document.querySelector('#generated-script').value === text,
+        text,
+      )
+      await rewrite.waitFor()
+    }
+    assert.equal(await source.inputValue(), original)
+    const drafts = await page.evaluate(() => window.voiceTest.scriptRequests)
+    assert.equal(drafts.length, 2)
+    assert.ok(
+      drafts.every(request => request.sourceScript === original && request.referenceText === facts),
+    )
+    await page.getByRole('button', { name: '保存并选用', exact: true }).click()
+    await page.evaluate(() => {
+      window.voiceTest.firstContinuationText = '太短的续稿。'
+    })
+    await page.getByRole('button', { name: '开始播报', exact: true }).click()
+    await page.waitForFunction(() => window.voiceTest.continuations.length >= 2)
+    const continuation = await page.evaluate(() => window.voiceTest.continuations[1])
+    assert.equal(continuation.sourceScript, original)
+    assert.equal(continuation.seedScript, second)
+    await page.getByRole('link', { name: '文案历史', exact: true }).click()
+    await page.getByRole('button', { name: /实时续稿.*未采用/ }).waitFor()
+    await page
+      .getByRole('button', { name: /实时续稿/ })
+      .filter({ hasNotText: '未采用' })
+      .first()
+      .waitFor()
+    await page.getByRole('button', { name: '停止语音', exact: true }).click()
+    await page.getByRole('button', { name: /实时续稿.*未采用/ }).click()
+    assert.equal(await page.getByLabel('文案正文', { exact: true }).textContent(), '太短的续稿。')
+    await page.getByRole('button', { name: /人工保存/ }).click()
+    assert.equal(await page.getByLabel('文案正文', { exact: true }).textContent(), second)
+    await page
+      .getByRole('button', { name: /首篇生成/ })
+      .last()
+      .click()
+    assert.equal(await page.getByLabel('文案正文', { exact: true }).textContent(), first)
+    await page.getByText('当时的参考依据', { exact: true }).click()
+    await page.getByText(original, { exact: true }).waitFor()
+    await page.getByText(facts, { exact: true }).waitFor()
+    await page.reload()
+    await page
+      .getByRole('button', { name: /首篇生成/ })
+      .last()
+      .click()
+    assert.equal(await page.getByLabel('文案正文', { exact: true }).textContent(), first)
+    await page.locator('main').evaluate(main => {
+      main.scrollTop = 0
+    })
+    await page.screenshot({ path: 'test-results/script-history.png' })
+    await page.getByRole('link', { name: '返回直播话术', exact: true }).click()
+    await page.getByRole('link', { name: '播报历史', exact: true }).click()
+    await page.getByRole('button', { name: /升级前的播报/ }).waitFor()
+    assert.deepEqual(errors, [])
+    console.log(
+      'SCRIPT HISTORY UI PASSED: legacy source, repeated rewrites, accepted/rejected continuation, manual save, previous audio history, reload',
     )
   } else if (process.argv.includes('--scripts')) {
     await page.getByLabel('简短产品介绍', { exact: true }).fill('蓝色水杯，容量500毫升')
@@ -886,8 +1105,8 @@ try {
       await page
         .getByRole('option', { name: '阿里千问 TTS（Qwen Audio 3.1 Flash）', exact: true })
         .click()
-      assert.equal(await page.locator('#tts-model').inputValue(), 'qwen-audio-3.1-tts-flash')
-      assert.equal(await page.locator('#tts-model').isDisabled(), true)
+      await openVoiceSetting(page, '厂商连接')
+      assert.equal(await page.locator('#tts-model').count(), 0)
       assert.equal(await page.locator('#qwen-voice-id').inputValue(), 'longanhuan_v3.1')
       await page
         .locator('#tts-url')
@@ -897,6 +1116,7 @@ try {
       assert.equal(await page.locator('#qwen-voice-id').inputValue(), 'xunanchuan_v3.1')
       await page.locator('#qwen-voice-id').fill('custom-qwen-voice')
       assert.equal(await page.locator('#tts-voice').innerText(), '当前音色 · custom-qwen-voice')
+      await openVoiceSetting(page, '朗读细调')
       await page.locator('#tts-style').fill('亲切自然，用普通话讲解。')
     }
     if (lanyunTest) {
@@ -910,17 +1130,19 @@ try {
       await page.waitForLoadState('networkidle')
       await page.locator('#tts-provider').click()
       await page.getByRole('option', { name: '蓝云 TTS（IndexTTS-2.5）', exact: true }).click()
+      await openVoiceSetting(page, '厂商连接')
       assert.equal(
         await page.getByLabel('API 基础地址', { exact: true }).inputValue(),
         'https://tts.lanyun.net',
       )
-      assert.equal(await page.getByLabel('模型', { exact: true }).isDisabled(), true)
+      assert.equal(await page.getByLabel('模型', { exact: true }).count(), 0)
       assert.equal(
         await page.getByRole('button', { name: '获取音色', exact: true }).isDisabled(),
         true,
       )
       assert.equal(await page.getByLabel('音色 ID', { exact: true }).inputValue(), '')
     }
+    await openVoiceSetting(page, '厂商连接')
     await page.locator('#tts-key').fill('test-key-only')
     await page.getByRole('button', { name: '保存密钥', exact: true }).click()
     await page.getByText('API Key · 已保存', { exact: true }).waitFor()
@@ -944,8 +1166,41 @@ try {
       assert.equal(await page.getByLabel('音色 ID', { exact: true }).inputValue(), 'user-001-voice')
       await page.getByRole('switch', { name: '动态语速', exact: true }).uncheck()
       await page.getByLabel('语速倍率', { exact: true }).fill('1.2')
-      await page.getByLabel('段间停顿 / 毫秒', { exact: true }).fill('80')
-      await page.getByLabel('情感描述（可选）', { exact: true }).fill('亲切自然')
+      await openVoiceSetting(page, '朗读细调')
+      await page.getByLabel('合成内部停顿（毫秒）', { exact: true }).fill('80')
+      const emotionMode = page.getByLabel('语气起伏', { exact: true })
+      const description = page.getByLabel('情感描述（可选）', { exact: true })
+      assert.match(await emotionMode.textContent(), /仅用原音色/)
+      assert.equal(await description.isDisabled(), true)
+      await emotionMode.click()
+      await page.getByRole('option', { name: '按音色或情感描述', exact: true }).click()
+      await description.fill('亲切自然')
+      await emotionMode.click()
+      await page.getByRole('option', { name: '仅用原音色（默认）', exact: true }).click()
+      assert.equal(await description.isDisabled(), true)
+      assert.equal(await description.inputValue(), '亲切自然')
+      assert.equal(await page.getByLabel('提问强度', { exact: true }).count(), 0)
+      await emotionMode.click()
+      await page.getByRole('option', { name: '自然起伏（推荐）', exact: true }).click()
+      const questionStrength = page.getByLabel('提问强度', { exact: true })
+      assert.equal(await questionStrength.getAttribute('placeholder'), '0.14')
+      assert.equal(await questionStrength.inputValue(), '')
+      await questionStrength.fill('0.09')
+      await page.getByLabel('欢迎强度', { exact: true }).fill('0')
+      const emphasisStrength = page.getByLabel('强调强度', { exact: true })
+      await emphasisStrength.fill('0.21')
+      await emphasisStrength.clear()
+      assert.equal(await emphasisStrength.getAttribute('placeholder'), '0.28')
+      const toneMode = page.getByLabel('语气起伏', { exact: true })
+      await toneMode.click()
+      await page.getByRole('option', { name: '起伏更明显', exact: true }).click()
+      assert.equal(await questionStrength.inputValue(), '')
+      assert.equal(await questionStrength.getAttribute('placeholder'), '0.24')
+      await questionStrength.fill('0.31')
+      await toneMode.click()
+      await page.getByRole('option', { name: '自然起伏（推荐）', exact: true }).click()
+      assert.equal(await questionStrength.inputValue(), '0.09')
+      assert.equal(await page.getByLabel('情感描述（可选）', { exact: true }).isDisabled(), true)
       await page.getByLabel('音色 ID 类型', { exact: true }).click()
       await page
         .getByRole('option', { name: '外部映射 ID（external_voice_id）', exact: true })
@@ -958,6 +1213,15 @@ try {
         await page.evaluate(() => window.voiceTest.requests[0].settings.voiceIdType),
         'external_voice_id',
       )
+      assert.equal(
+        await page.evaluate(() => window.voiceTest.requests[0].settings.lanyunEmotionMode),
+        'natural',
+      )
+      assert.deepEqual(
+        await page.evaluate(() => window.voiceTest.requests[0].settings.lanyunEmotionStrengths),
+        { natural: { question: 0.09, welcome: 0 }, expressive: { question: 0.31 } },
+      )
+      assert.equal(await page.evaluate(() => window.voiceTest.requests[0].settings.speechRate), 1.2)
       await page.getByRole('button', { name: '停止语音', exact: true }).click()
       await page.getByLabel('音色 ID 类型', { exact: true }).click()
       await page.getByRole('option', { name: '蓝云音色 ID（voice_id）', exact: true }).click()
@@ -988,6 +1252,22 @@ try {
       await page.getByText('API Key · 已保存', { exact: true }).waitFor()
       assert.equal(await page.getByLabel('音色 ID', { exact: true }).inputValue(), 'user-001-voice')
       assert.equal(await page.getByLabel('语速倍率', { exact: true }).inputValue(), '1.2')
+      assert.match(await page.getByLabel('语气起伏', { exact: true }).textContent(), /自然起伏/)
+      const questionStrength = page.getByLabel('提问强度', { exact: true })
+      assert.equal(await questionStrength.inputValue(), '0.09')
+      const restoreStrengths = page.getByRole('button', { name: '恢复本档默认', exact: true })
+      await restoreStrengths.click()
+      assert.equal(await questionStrength.inputValue(), '')
+      assert.equal(await restoreStrengths.isDisabled(), true)
+      await page.getByLabel('语气起伏', { exact: true }).click()
+      await page.getByRole('option', { name: '起伏更明显', exact: true }).click()
+      assert.equal(await questionStrength.inputValue(), '0.31')
+      await page.getByLabel('语气起伏', { exact: true }).click()
+      await page.getByRole('option', { name: '自然起伏（推荐）', exact: true }).click()
+      assert.equal(
+        await page.getByLabel('情感描述（可选）', { exact: true }).inputValue(),
+        '亲切自然',
+      )
       await page.screenshot({ path: 'test-results/lanyun-tts-settings.png' })
     }
     if (qwenTest) {
@@ -1001,6 +1281,7 @@ try {
       assert.equal(await page.locator('#tts-style').inputValue(), '亲切自然，用普通话讲解。')
       await page.reload()
       await page.waitForLoadState('networkidle')
+      await openVoiceSetting(page, '厂商连接')
       assert.equal(await page.locator('#qwen-voice-id').inputValue(), 'custom-qwen-voice')
       assert.equal(
         await page.locator('#tts-url').inputValue(),
@@ -1047,7 +1328,7 @@ try {
     await page.waitForFunction(() =>
       window.voiceTest.requests.some(request => request.text.includes('类使用场景')),
     )
-    await page.getByRole('button', { name: '句末暂停', exact: true }).click()
+    await page.getByRole('button', { name: '段末暂停', exact: true }).click()
     await page.getByText('默认账号 · 已暂停', { exact: true }).waitFor()
     await page.evaluate(() =>
       window.emitTestEvent('tasks:liveControl:disconnectedEvent', 'default'),

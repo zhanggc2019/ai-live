@@ -7,6 +7,7 @@ import AutoReplySettings from '@/pages/AutoReply/AutoReplySettings'
 import LiveControl from '@/pages/LiveControl'
 import LiveSpeech from '@/pages/LiveSpeech'
 import VoiceHistoryPage from '@/pages/LiveSpeech/History'
+import ScriptHistoryPage from '@/pages/LiveSpeech/ScriptHistory'
 import RedPacket from '@/pages/RedPacket'
 import Settings from '@/pages/SettingsPage'
 import TtsSettingsPage from '@/pages/TtsSettings'
@@ -19,6 +20,7 @@ export const router = createHashRouter([
     children: [
       { path: '/live-speech', element: <LiveSpeech /> },
       { path: '/live-speech/history', element: <VoiceHistoryPage /> },
+      { path: '/live-speech/script-history', element: <ScriptHistoryPage /> },
       { path: '/tts-settings', element: <TtsSettingsPage /> },
       {
         path: '/',

@@ -1,4 +1,4 @@
-import { History, Play, Square, Volume2 } from 'lucide-react'
+import { FileText, History, Play, Square, Volume2 } from 'lucide-react'
 import { useEffect } from 'react'
 import { Link, useLocation } from 'react-router'
 import { IPC_CHANNELS } from 'shared/ipcChannels'
@@ -21,7 +21,7 @@ import { useAccounts } from '@/hooks/useAccounts'
 import { useCurrentLiveControl } from '@/hooks/useLiveControl'
 import { useToast } from '@/hooks/useToast'
 import { getVoiceConfig, useVoiceConfigStore } from '@/hooks/useVoiceConfig'
-import { useVoiceHistoryStatus } from '@/services/voice/history'
+import { useScriptHistoryStatus, useVoiceHistoryStatus } from '@/services/voice/history'
 import {
   previewVoice,
   startVoiceSession,
@@ -44,6 +44,7 @@ export default function LiveSpeech() {
   const historyError = useVoiceHistoryStatus(state =>
     state.error?.accountId === accountId ? state.error.message : undefined,
   )
+  const scriptHistoryError = useScriptHistoryStatus(state => state.saveErrors[accountId])
   const { toast } = useToast()
   const opening = splitSpeechText(config.openingScript)
   const selectedScript = config.savedScripts.find(script => script.id === config.selectedScriptId)
@@ -115,6 +116,12 @@ export default function LiveSpeech() {
             <Link to="#broadcast-setup">前往开播准备</Link>
           </Button>
           <Button asChild variant="outline">
+            <Link to="/live-speech/script-history">
+              <FileText />
+              文案历史
+            </Link>
+          </Button>
+          <Button asChild variant="outline">
             <Link to="/live-speech/history">
               <History />
               播报历史
@@ -125,6 +132,11 @@ export default function LiveSpeech() {
       {historyError && (
         <p role="alert" className="text-sm text-destructive">
           {historyError}
+        </p>
+      )}
+      {scriptHistoryError && (
+        <p role="alert" className="text-sm text-destructive">
+          部分文案未能写入历史，请检查本机存储空间。
         </p>
       )}
       <div className="grid items-start gap-4 @min-[850px]:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)]">
@@ -265,7 +277,7 @@ export default function LiveSpeech() {
                   </Select>
                 </div>
                 <div className="min-w-0 space-y-2">
-                  <Label htmlFor="speech-gap">句间停顿（秒）</Label>
+                  <Label htmlFor="speech-gap">音频段间停顿（秒）</Label>
                   <Input
                     id="speech-gap"
                     type="number"

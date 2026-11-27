@@ -1,9 +1,10 @@
 import { IPC_CHANNELS } from 'shared/ipcChannels'
-import { countScriptCharacters } from 'shared/liveScript'
+import { countScriptCharacters, hasScriptReferences } from 'shared/liveScript'
 import { create } from 'zustand'
 import { useAIProviderStore } from '@/hooks/useAIProvider'
 import { getVoiceConfig, useVoiceConfigStore } from '@/hooks/useVoiceConfig'
 import { EVENTS, eventEmitter } from '@/utils/events'
+import { archiveScriptHistory } from './history'
 
 interface GenerationState {
   requestId: string
@@ -29,12 +30,45 @@ export async function generateScriptDraft(accountId: string): Promise<void> {
   const current = useScriptGeneration.getState().contexts[accountId]
   if (current && current.status !== 'idle') throw new Error('当前账号正在生成话术')
   const config = getVoiceConfig(accountId)
-  if (!config.productIntro.trim()) throw new Error('请先填写简短产品介绍')
+  if (!hasScriptReferences(config)) throw new Error('请先填写产品介绍、参考资料或原话术')
+  const rewriting = Boolean(config.sourceScript.trim())
+  const title = rewriting
+    ? `${(config.scriptDraftTitle.replace(/·口语版$/u, '').trim() || '直播话术').slice(0, 55)}·口语版`
+    : `${config.productIntro.trim().slice(0, 18) || '商品'}·直播话术`
   const ai = useAIProviderStore.getState().chat
   const apiKey = ai.apiKeys[ai.config.provider]
   if (!apiKey?.trim() || !ai.config.model?.trim())
     throw new Error('请先配置 AI 文本模型与 API Key，TTS 密钥不用于写作')
   const requestId = crypto.randomUUID()
+  const references = {
+    productIntro: config.productIntro,
+    referenceText: config.referenceText,
+    sourceScript: config.sourceScript,
+    requirements: config.scriptRequirements,
+  }
+  /** 先留档生成时的正文和依据，再让结果进入可编辑区。 */
+  function storeDraft(text: string, note?: string) {
+    if (!text.trim()) return
+    archiveScriptHistory(
+      {
+        id: requestId,
+        accountId,
+        title,
+        createdAt: Date.now(),
+        kind: 'draft',
+        status: note ? 'partial' : 'ready',
+        note,
+        model: ai.config.model,
+        text,
+      },
+      references,
+    )
+    useVoiceConfigStore.getState().update(accountId, {
+      generatedScript: text,
+      scriptDraftId: '',
+      scriptDraftTitle: title,
+    })
+  }
   let state: GenerationState = { requestId, status: 'generating', text: '', error: '', notice: '' }
   setGeneration(accountId, state)
   const unsubscribe = window.ipcRenderer.on(IPC_CHANNELS.liveScript.progress, progress => {
@@ -54,8 +88,7 @@ export async function generateScriptDraft(accountId: string): Promise<void> {
     const result = await window.ipcRenderer.invoke(IPC_CHANNELS.liveScript.generate, {
       requestId,
       accountId,
-      productIntro: config.productIntro,
-      requirements: config.scriptRequirements,
+      ...references,
       provider: ai.config.provider,
       model: ai.config.model,
       apiKey,
@@ -63,30 +96,23 @@ export async function generateScriptDraft(accountId: string): Promise<void> {
     })
     if (useScriptGeneration.getState().contexts[accountId]?.requestId !== requestId) return
     const text = result.text || state.text
-    if (text.trim())
-      useVoiceConfigStore.getState().update(accountId, {
-        generatedScript: text,
-        scriptDraftId: '',
-        scriptDraftTitle: `${config.productIntro.trim().slice(0, 18)}·直播话术`,
-      })
+    storeDraft(
+      text,
+      result.error ||
+        (result.cancelled ? '已停止生成' : result.truncated ? '模型输出达到上限' : undefined),
+    )
     const count = countScriptCharacters(text)
     const notice = result.cancelled
       ? '已停止生成，当前内容保留为可编辑草稿。'
       : result.truncated
         ? '模型输出达到上限，当前内容可能未写完，可编辑后保存或重新生成。'
-        : count < 2700 || count > 3300
-          ? `当前约 ${count} 字，与 3000 字目标有差异，可编辑或重新生成。`
+        : !rewriting && (count < 2700 || count > 3300)
+          ? `当前约 ${count} 字，可核对商品事实后编辑或保存。`
           : '话术已生成，可以编辑、命名并保存到话术库。'
     setGeneration(accountId, { ...state, status: 'idle', text, error: result.error ?? '', notice })
   } catch (error) {
     if (useScriptGeneration.getState().contexts[accountId]?.requestId !== requestId) return
-    if (state.text.trim()) {
-      useVoiceConfigStore.getState().update(accountId, {
-        generatedScript: state.text,
-        scriptDraftId: '',
-        scriptDraftTitle: '未完成的话术草稿',
-      })
-    }
+    storeDraft(state.text, '生成失败，保留已收到的正文')
     setGeneration(accountId, {
       ...state,
       status: 'idle',

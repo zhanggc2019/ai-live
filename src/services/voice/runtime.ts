@@ -4,7 +4,11 @@ import {
   findScriptTopicConflict,
   type LiveScriptResult,
 } from 'shared/liveScript'
-import { prepareSpeechPacing, type SpeechPacingPlan } from 'shared/speechPacing'
+import {
+  prepareSpeechPacing,
+  type SpeechPacingPlan,
+  splitSpeechForSynthesis,
+} from 'shared/speechPacing'
 import { type SpeechAudio, splitSpeechText } from 'shared/voice'
 import { create } from 'zustand'
 import { useAIProviderStore } from '@/hooks/useAIProvider'
@@ -13,7 +17,12 @@ import { EVENTS, eventEmitter } from '@/utils/events'
 import { playbackDuration } from './audioDuration'
 import { prepareAudioBuffer } from './audioPrebuffer'
 import { ContinuousScriptController, type ContinuousScriptState } from './continuousScript'
-import { appendVoiceHistory, useVoiceHistoryStatus, type VoiceHistorySession } from './history'
+import {
+  appendVoiceHistory,
+  archiveScriptHistory,
+  useVoiceHistoryStatus,
+  type VoiceHistorySession,
+} from './history'
 import { VoiceQueue, type VoiceQueueState } from './VoiceQueue'
 
 interface VoiceRuntimeState extends VoiceQueueState {
@@ -200,11 +209,29 @@ const continuation = new ContinuousScriptController({
       signal.removeEventListener('abort', cancel)
     }
   },
-  /** 新文案排在原稿后面，由同一个队列按句预合成并串行播放。 */
+  /** 续稿结果到达即留档，保存失败不会阻塞播报队列。 */
+  onAttempt: (request, output, title) => {
+    archiveScriptHistory(
+      {
+        ...output,
+        id: request.requestId,
+        accountId: request.accountId,
+        title: title || '直播话术',
+        createdAt: Date.now(),
+        kind: 'continuation',
+        model: request.model,
+        segmentIndex: request.segmentIndex,
+        theme: request.theme,
+        seedScript: request.seedScript,
+      },
+      request,
+    )
+  },
+  /** 新文案排在原稿后面，由同一个队列预合成并串行播放。 */
   onText: text => {
-    const sentences = splitSpeechText(text)
-    if (stagingSentences) stagingSentences.push(...sentences)
-    else queue.supply(sentences)
+    const segments = splitSpeechForSynthesis(text, sessionConfig.providers[sessionConfig.provider])
+    if (stagingSentences) stagingSentences.push(...segments)
+    else queue.supply(segments)
   },
   /** 独立展示供稿状态，不覆盖 TTS 合成或播放错误。 */
   onState: state => useVoiceRuntime.setState({ continuation: state }),
@@ -216,7 +243,8 @@ export function startVoiceSession(accountId: string, mode: 'live' | 'local' = 'l
   if ((active.running || active.preparing) && active.accountId !== accountId)
     throw new Error('另一个账号正在播报，请先停止它的语音会话')
   const config = getVoiceConfig(accountId)
-  const opening = splitSpeechText(config.openingScript)
+  const provider = config.providers[config.provider]
+  const opening = splitSpeechForSynthesis(config.openingScript, provider)
   const selectedScript = config.savedScripts.find(script => script.id === config.selectedScriptId)
   if (!selectedScript) throw new Error('请先选择一份已保存话术')
   const conflict = findScriptTopicConflict(selectedScript, config.savedScripts)
@@ -225,7 +253,7 @@ export function startVoiceSession(accountId: string, mode: 'live' | 'local' = 'l
       `《${selectedScript.title}》的正文仍是《${conflict.title}》相关内容，请先在编辑区修改并保存`,
     )
   const seedScript = selectedScript.content
-  const seed = splitSpeechText(seedScript)
+  const seed = splitSpeechForSynthesis(seedScript, provider)
   if (!seed.length) throw new Error('所选话术正文为空，请先在编辑区保存正文')
   const ai = useAIProviderStore.getState().chat
   const apiKey = ai.apiKeys[ai.config.provider]
@@ -257,6 +285,8 @@ export function startVoiceSession(accountId: string, mode: 'live' | 'local' = 'l
   continuation.start({
     accountId,
     seedScript,
+    sourceScript: selectedScript.sourceScript ?? selectedScript.content,
+    scriptTitle: selectedScript.title,
     productIntro: selectedScript.productIntro ?? '',
     referenceText: selectedScript.referenceText ?? '',
     requirements: selectedScript.scriptRequirements ?? '',
@@ -362,7 +392,7 @@ export function enqueueVoiceReply(
   queue.enqueue(splitSpeechText(text))
 }
 
-/** 单句试听复用完整播报的队列，不中断已有讲解或产生重叠声音。 */
+/** 独立试听沿用直播的合成分段，插入正在进行的播报时按短句排队。 */
 export function previewVoice(accountId: string, text: string): void {
   const sentences = splitSpeechText(text)
   if (!sentences.length) throw new Error('请先填写要试听的文字')
@@ -387,10 +417,14 @@ export function previewVoice(accountId: string, text: string): void {
     activeScriptId: null,
     activeScriptTitle: '',
   })
-  queue.start(sentences, [], sessionConfig.gapMs)
+  queue.start(
+    splitSpeechForSynthesis(text, sessionConfig.providers[sessionConfig.provider]),
+    [],
+    sessionConfig.gapMs,
+  )
 }
 
-/** 暂停会在本句播放结束后生效，恢复时按原有顺序继续。 */
+/** 暂停会在当前音频播完后生效，恢复时按原有顺序继续。 */
 export function pauseVoiceSession(paused: boolean): void {
   queue.setPaused(paused)
 }

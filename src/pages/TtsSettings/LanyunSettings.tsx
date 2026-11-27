@@ -1,6 +1,15 @@
 import { useEffect, useRef, useState } from 'react'
 import { IPC_CHANNELS } from 'shared/ipcChannels'
-import type { TtsLanguage, TtsSettings, TtsVoice } from 'shared/voice'
+import {
+  LANYUN_EMOTION_DEFAULTS,
+  type LanyunEmotionKind,
+  type LanyunEmotionMode,
+  type LanyunEmotionStrengths,
+  resolveLanyunEmotionMode,
+  type TtsLanguage,
+  type TtsSettings,
+  type TtsVoice,
+} from 'shared/voice'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -13,16 +22,25 @@ import {
 } from '@/components/ui/select'
 import { useToast } from '@/hooks/useToast'
 
-interface Props {
+const LANYUN_STRENGTH_FIELDS = [
+  ['reminder', '提醒强度'],
+  ['question', '提问强度'],
+  ['welcome', '欢迎强度'],
+  ['emphasis', '强调强度'],
+] as const
+
+interface EditProps {
   settings: TtsSettings
-  hasKey: boolean
-  keyRevision: number
-  dynamicRate: boolean
   onChange: (patch: Partial<TtsSettings>) => void
 }
 
-/** 蓝云音色及原生参数配置；更换应用密钥或用户身份时清理过期目录。 */
-export function LanyunSettings({ settings, hasKey, keyRevision, dynamicRate, onChange }: Props) {
+interface VoicePickerProps extends EditProps {
+  hasKey: boolean
+  keyRevision: number
+}
+
+/** 选择蓝云音色；更换应用密钥或用户身份时清理过期目录。 */
+export function LanyunVoicePicker({ settings, hasKey, keyRevision, onChange }: VoicePickerProps) {
   const identity = JSON.stringify([settings.baseURL, settings.userId, keyRevision, hasKey])
   const [catalog, setCatalog] = useState<{ identity: string; voices: TtsVoice[]; loaded: boolean }>(
     { identity, voices: [], loaded: false },
@@ -68,44 +86,17 @@ export function LanyunSettings({ settings, hasKey, keyRevision, dynamicRate, onC
   }
 
   return (
-    <div className="space-y-4">
-      <div className="space-y-2">
-        <Label htmlFor="lanyun-user">用户 ID（私人音色需要）</Label>
-        <Input
-          id="lanyun-user"
-          value={settings.userId ?? ''}
-          maxLength={256}
-          placeholder="公共音色可留空；私人音色填写所属业务用户 ID"
-          onChange={event => onChange({ userId: event.target.value })}
-        />
-      </div>
-      <div className="space-y-2">
-        <Label htmlFor="lanyun-id-type">音色 ID 类型</Label>
-        <Select
-          value={settings.voiceIdType ?? 'voice_id'}
-          onValueChange={value =>
-            onChange({ voiceIdType: value as TtsSettings['voiceIdType'], voice: '' })
-          }
-        >
-          <SelectTrigger id="lanyun-id-type">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="voice_id">蓝云音色 ID（voice_id）</SelectItem>
-            <SelectItem value="external_voice_id">外部映射 ID（external_voice_id）</SelectItem>
-          </SelectContent>
-        </Select>
-      </div>
+    <div className="grid gap-2">
       {settings.voiceIdType !== 'external_voice_id' && (
         <div className="space-y-2">
           <Label htmlFor="lanyun-voices">可用音色</Label>
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
             <Select
               disabled={!voices.length || loading}
               value={voices.some(voice => voice.id === settings.voice) ? settings.voice : ''}
               onValueChange={value => onChange({ voice: value })}
             >
-              <SelectTrigger id="lanyun-voices">
+              <SelectTrigger id="lanyun-voices" className="min-w-40 flex-1">
                 <SelectValue placeholder={loaded ? '请选择音色' : '获取音色后选择'} />
               </SelectTrigger>
               <SelectContent>
@@ -140,7 +131,151 @@ export function LanyunSettings({ settings, hasKey, keyRevision, dynamicRate, onC
           onChange={event => onChange({ voice: event.target.value })}
         />
       </div>
-      <div className="grid grid-cols-3 gap-3">
+    </div>
+  )
+}
+
+/** 管理蓝云私人音色的身份及 ID 类型。 */
+export function LanyunConnectionFields({ settings, onChange }: EditProps) {
+  return (
+    <>
+      <div className="space-y-2">
+        <Label htmlFor="lanyun-user">用户 ID（私人音色需要）</Label>
+        <Input
+          id="lanyun-user"
+          value={settings.userId ?? ''}
+          maxLength={256}
+          placeholder="填写私人音色所属的用户 ID"
+          onChange={event => onChange({ userId: event.target.value })}
+        />
+      </div>
+      <div className="space-y-2">
+        <Label htmlFor="lanyun-id-type">音色 ID 类型</Label>
+        <Select
+          value={settings.voiceIdType ?? 'voice_id'}
+          onValueChange={value =>
+            onChange({ voiceIdType: value as TtsSettings['voiceIdType'], voice: '' })
+          }
+        >
+          <SelectTrigger id="lanyun-id-type">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="voice_id">蓝云音色 ID（voice_id）</SelectItem>
+            <SelectItem value="external_voice_id">外部映射 ID（external_voice_id）</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
+    </>
+  )
+}
+
+/** 调整蓝云的情感、语言及单次合成内部停顿。 */
+export function LanyunSpeechSettings({ settings, onChange }: EditProps) {
+  const emotionMode = resolveLanyunEmotionMode(settings)
+  const strengthMode =
+    emotionMode === 'natural' || emotionMode === 'expressive' ? emotionMode : undefined
+  const emotionStrengths = strengthMode
+    ? settings.lanyunEmotionStrengths?.[strengthMode]
+    : undefined
+
+  /** 保存当前档的修改，并保留另一档的自定义强度。 */
+  function saveEmotionStrengths(strengths: LanyunEmotionStrengths) {
+    if (strengthMode) {
+      onChange({
+        lanyunEmotionStrengths: { ...settings.lanyunEmotionStrengths, [strengthMode]: strengths },
+      })
+    }
+  }
+
+  /** 留空恢复此句式的默认值，零值作为明确的停用设置保存。 */
+  function updateEmotionStrength(kind: LanyunEmotionKind, value: number | undefined) {
+    const next = { ...emotionStrengths }
+    if (value === undefined) delete next[kind]
+    else next[kind] = value
+    saveEmotionStrengths(next)
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="space-y-2">
+        <Label htmlFor="lanyun-emotion-mode">语气起伏</Label>
+        <Select
+          value={emotionMode}
+          onValueChange={value => onChange({ lanyunEmotionMode: value as LanyunEmotionMode })}
+        >
+          <SelectTrigger id="lanyun-emotion-mode" aria-describedby="lanyun-emotion-help">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="original">仅用原音色（默认）</SelectItem>
+            <SelectItem value="voice">按音色或情感描述</SelectItem>
+            <SelectItem value="natural">自然起伏（推荐）</SelectItem>
+            <SelectItem value="expressive">起伏更明显</SelectItem>
+          </SelectContent>
+        </Select>
+        <p id="lanyun-emotion-help" className="text-xs text-muted-foreground">
+          {emotionMode === 'original'
+            ? '使用音色本身的表现，语速仍按播报节奏设置。'
+            : strengthMode
+              ? '按每句话的内容调整情感和强度，普通讲解沿用原音色。'
+              : '使用下方的情感描述，留空时沿用原音色。'}
+        </p>
+        {strengthMode && (
+          <div className="space-y-3 rounded-md border p-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <p id="lanyun-strength-help" className="text-xs text-muted-foreground">
+                填写 0～1。留空用默认值，填 0 停用该类语气。
+              </p>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                disabled={!Object.keys(emotionStrengths ?? {}).length}
+                onClick={() => saveEmotionStrengths({})}
+              >
+                恢复本档默认
+              </Button>
+            </div>
+            <div className="grid gap-3 sm:grid-cols-2">
+              {LANYUN_STRENGTH_FIELDS.map(([kind, label]) => {
+                const id = `lanyun-emotion-${kind}`
+                const defaultValue = LANYUN_EMOTION_DEFAULTS[strengthMode][kind].toFixed(2)
+                return (
+                  <div key={kind} className="space-y-2">
+                    <div className="flex flex-wrap items-center justify-between gap-1">
+                      <Label htmlFor={id}>{label}</Label>
+                      <span id={`${id}-default`} className="text-xs text-muted-foreground">
+                        默认 {defaultValue}
+                      </span>
+                    </div>
+                    <Input
+                      id={id}
+                      aria-describedby={`lanyun-strength-help ${id}-default`}
+                      type="number"
+                      min={0}
+                      max={1}
+                      step="any"
+                      placeholder={defaultValue}
+                      value={emotionStrengths?.[kind] ?? ''}
+                      onChange={event => {
+                        const { value, valueAsNumber, validity } = event.currentTarget
+                        if (
+                          !validity.badInput &&
+                          (value === '' || (valueAsNumber >= 0 && valueAsNumber <= 1))
+                        ) {
+                          updateEmotionStrength(kind, value === '' ? undefined : valueAsNumber)
+                        }
+                      }}
+                    />
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+        )}
+      </div>
+      <div className="grid gap-3 sm:grid-cols-2">
         <div className="space-y-2">
           <Label htmlFor="lanyun-language">合成语言</Label>
           <Select
@@ -160,20 +295,7 @@ export function LanyunSettings({ settings, hasKey, keyRevision, dynamicRate, onC
           </Select>
         </div>
         <div className="space-y-2">
-          <Label htmlFor="lanyun-rate">语速倍率</Label>
-          <Input
-            id="lanyun-rate"
-            disabled={dynamicRate}
-            type="number"
-            min={0.5}
-            max={2}
-            step={0.1}
-            value={settings.speechRate ?? 1}
-            onChange={event => onChange({ speechRate: Number(event.target.value) })}
-          />
-        </div>
-        <div className="space-y-2">
-          <Label htmlFor="lanyun-silence">段间停顿 / 毫秒</Label>
+          <Label htmlFor="lanyun-silence">合成内部停顿（毫秒）</Label>
           <Input
             id="lanyun-silence"
             type="number"
@@ -185,10 +307,6 @@ export function LanyunSettings({ settings, hasKey, keyRevision, dynamicRate, onC
           />
         </div>
       </div>
-      <p className="text-xs text-muted-foreground">
-        {dynamicRate && '动态语速已开启，合成时使用每句的倍率；关闭后恢复这里保存的固定倍率。'}
-        段间停顿控制单次合成内部的间隔；分句播报的间隔仍由「直播话术」页设置。
-      </p>
     </div>
   )
 }

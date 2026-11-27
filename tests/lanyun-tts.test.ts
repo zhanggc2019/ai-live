@@ -6,7 +6,7 @@ import {
   listLanyunVoices,
   validateTtsSettings,
 } from '../electron/main/services/tts/providers'
-import { TTS_PRESETS, type TtsSettings } from '../shared/voice'
+import { resolveLanyunEmotionMode, TTS_PRESETS, type TtsSettings } from '../shared/voice'
 
 const settings: TtsSettings = { ...TTS_PRESETS.lanyun, voice: 'voice-test' }
 
@@ -89,6 +89,186 @@ test('蓝云使用原生鉴权，合成及下载携带相同私人身份，返�
     'https://tts.lanyun.net/api/v1/tts/synthesize',
     'https://tts.lanyun.net/recordings/generated.wav',
   ])
+})
+
+test('默认沿用原音色，显式选择原音色时跳过已保存的情感参数', async context => {
+  const requests: {
+    use_emo_text: boolean
+    emo_text?: string
+    emo_alpha?: number
+    emo_vector?: number[]
+    speech_rate: number
+  }[] = []
+  context.mock.method(globalThis, 'fetch', async (_url: string | URL, init: RequestInit) => {
+    if (init.method === 'POST') {
+      requests.push(JSON.parse(init.body as string))
+      return Response.json({ audio_url: '/recordings/generated.wav' })
+    }
+    return new Response(wav())
+  })
+  assert.equal(resolveLanyunEmotionMode(TTS_PRESETS.lanyun), 'original')
+  await synthesize({ speechRate: 1.08 })
+  await synthesize({
+    lanyunEmotionMode: 'original',
+    lanyunEmotionStrengths: { natural: { welcome: 0.9 } },
+    instructions: '先前保存的情感描述',
+    speechRate: 1.08,
+  })
+  for (const request of requests) {
+    assert.equal(request.use_emo_text, false)
+    assert.equal(request.emo_text, undefined)
+    assert.equal(request.emo_alpha, undefined)
+    assert.equal(request.emo_vector, undefined)
+    assert.equal(request.speech_rate, 1.08)
+  }
+
+  await synthesize({ lanyunEmotionMode: undefined, instructions: '旧版已保存的情感描述' })
+  assert.equal(requests[2].use_emo_text, true)
+  assert.equal(requests[2].emo_text, '旧版已保存的情感描述')
+})
+
+test('蓝云按当句文字调整语气强度，减少对原音色的影响且保留原生语速', async context => {
+  const requests: {
+    text: string
+    speech_rate: number
+    emo_alpha?: number
+    emo_vector?: number[]
+    emo_text?: string
+    use_emo_text: boolean
+  }[] = []
+  context.mock.method(globalThis, 'fetch', async (_url: string | URL, init: RequestInit) => {
+    if (init.method === 'POST') {
+      requests.push(JSON.parse(init.body as string))
+      return Response.json({ audio_url: '/recordings/generated.wav' })
+    }
+    return new Response(wav())
+  })
+
+  const provider = new LanyunTtsProvider()
+  const choices = [
+    ['欢迎刚进来的朋友，咱们聊聊这只水杯。', 'natural', 1.08],
+    ['你平时出门会带水吗？', 'natural', 1.03],
+    ['重点是看杯子能不能顺手放进去。', 'natural', 1],
+    ['提醒一下，不要装到杯口。', 'natural', 0.87],
+    ['这只杯子是五百毫升。', 'natural', 0.9],
+    ['你平时出门会带水吗？', 'expressive', 1.03],
+    ['挑杯子的时候要注意什么？', 'natural', 1.03],
+    ['可以注意到水杯上有刻度。', 'natural', 1],
+    ['这只杯子有把手！', 'natural', 1],
+    ['对了， 别忘了先拧紧杯盖。', 'expressive', 0.88],
+  ] as const
+  for (const [text, lanyunEmotionMode, speechRate] of choices) {
+    await provider.synthesize(
+      text,
+      { ...settings, lanyunEmotionMode, speechRate, instructions: '原先保存的情感描述' },
+      'test-lanyun-key',
+      new AbortController().signal,
+    )
+  }
+
+  assert.deepEqual(
+    requests.map(request => [request.text, request.speech_rate]),
+    choices.map(([text, , rate]) => [text, rate]),
+  )
+  const [
+    welcome,
+    question,
+    emphasis,
+    reminder,
+    statement,
+    expressiveQuestion,
+    questionWithCue,
+    observation,
+    exclamation,
+    expressiveReminder,
+  ] = requests
+  assert.equal(new Set(requests.slice(0, 4).map(item => JSON.stringify(item.emo_vector))).size, 4)
+  assert.deepEqual(
+    [welcome, question, emphasis, reminder].map(item => item.emo_alpha),
+    [0.22, 0.14, 0.28, 0.1],
+  )
+  for (const item of [
+    welcome,
+    question,
+    emphasis,
+    reminder,
+    expressiveQuestion,
+    expressiveReminder,
+  ]) {
+    assert.equal(item.emo_vector?.length, 8)
+    assert.ok((item.emo_vector?.reduce((sum, weight) => sum + weight, 0) ?? 0) <= 0.8)
+    assert.equal(item.emo_vector?.[6], 0)
+    assert.equal(item.emo_text, undefined)
+    assert.equal(item.use_emo_text, false)
+  }
+  assert.deepEqual(questionWithCue.emo_vector, question.emo_vector)
+  assert.ok((reminder.emo_vector?.[7] ?? 0) > 0)
+  for (const item of [statement, observation, exclamation]) {
+    assert.equal(item.emo_vector, undefined)
+    assert.equal(item.emo_alpha, undefined)
+    assert.equal(item.emo_text, undefined)
+    assert.equal(item.use_emo_text, false)
+  }
+  assert.deepEqual(expressiveQuestion.emo_vector, question.emo_vector)
+  assert.equal(expressiveQuestion.emo_alpha, 0.24)
+  assert.equal(expressiveReminder.emo_alpha, 0.18)
+})
+
+test('语气强度可逐类自定义，两档独立，零值停用且留空使用默认', async context => {
+  const requests: { emo_alpha?: number; emo_vector?: number[]; use_emo_text: boolean }[] = []
+  context.mock.method(globalThis, 'fetch', async (_url: string | URL, init: RequestInit) => {
+    if (init.method === 'POST') {
+      requests.push(JSON.parse(init.body as string))
+      return Response.json({ audio_url: '/recordings/generated.wav' })
+    }
+    return new Response(wav())
+  })
+  const provider = new LanyunTtsProvider()
+  const configured: TtsSettings = {
+    ...settings,
+    instructions: '原情感描述',
+    lanyunEmotionStrengths: {
+      natural: { question: 0.09, welcome: 0 },
+      expressive: { question: 0.31 },
+    },
+  }
+  for (const [text, lanyunEmotionMode] of [
+    ['你今天带水了吗？', 'natural'],
+    ['欢迎刚进来的朋友。', 'natural'],
+    ['重点是要看实际尺寸。', 'natural'],
+    ['你今天带水了吗？', 'expressive'],
+    ['欢迎刚进来的朋友。', 'expressive'],
+  ] as const) {
+    await provider.synthesize(
+      text,
+      { ...configured, lanyunEmotionMode },
+      'test-lanyun-key',
+      new AbortController().signal,
+    )
+  }
+  assert.deepEqual(
+    requests.map(request => request.emo_alpha),
+    [0.09, undefined, 0.28, 0.31, 0.36],
+  )
+  assert.equal(requests[1].emo_vector, undefined)
+  assert.ok(requests.every(request => request.use_emo_text === false))
+
+  for (const question of [-0.01, 1.01, Number.NaN, Number.POSITIVE_INFINITY]) {
+    await assert.rejects(
+      provider.synthesize(
+        '你今天带水了吗？',
+        {
+          ...configured,
+          lanyunEmotionMode: 'natural',
+          lanyunEmotionStrengths: { natural: { question } },
+        },
+        'test-lanyun-key',
+        new AbortController().signal,
+      ),
+      /语气强度需在 0 到 1 之间/,
+    )
+  }
+  assert.equal(requests.length, 5, '无效强度应该在发出合成请求前拦截')
 })
 
 test('外部音色 ID 不混入 voice_id，空情感禁用，按内容识别两种 MP3 头', async context => {

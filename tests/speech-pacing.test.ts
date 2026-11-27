@@ -5,8 +5,71 @@ import {
   normalizeSpeechPacing,
   planSpeechPacing,
   prepareSpeechPacing,
+  splitSpeechForSynthesis,
 } from '../shared/speechPacing'
-import { TTS_PRESETS } from '../shared/voice'
+import { splitSpeechText, TTS_PRESETS } from '../shared/voice'
+
+test('蓝云默认收窄倍率，欢迎仍稍快、价格仍放慢', () => {
+  const pacing = normalizeSpeechPacing(undefined, 'lanyun')
+  assert.equal(pacing.enabled, true)
+  assert.deepEqual([pacing.minRate, pacing.maxRate], [0.93, 1.07])
+  assert.equal(planSpeechPacing('欢迎大家来到直播间！', pacing).rate, 1.03)
+  assert.equal(planSpeechPacing('今天体验价39元。', pacing).rate, 0.95)
+  assert.deepEqual(normalizeSpeechPacing(undefined, 'mimo'), DEFAULT_SPEECH_PACING)
+})
+
+test('蓝云把同一行的两句短话合成一段，保留标点且最多合两句', () => {
+  const first = '你平时把杯子放哪儿？要是放小包，先看看底有多宽。'
+  const last = '杯底平一些，放在桌上也稳。'
+  assert.deepEqual(splitSpeechForSynthesis(first + last, TTS_PRESETS.lanyun), [first, last])
+  assert.deepEqual(splitSpeechForSynthesis('It fits. Give it a try.', TTS_PRESETS.lanyun), [
+    'It fits. Give it a try.',
+  ])
+  assert.deepEqual(splitSpeechForSynthesis(first, TTS_PRESETS.mimo), splitSpeechText(first))
+})
+
+test('蓝云保留换行、转场、明显不同的语速需求和长句边界', () => {
+  const contents = [
+    '放进包里试试。',
+    '紧接着看一下包底。',
+    '换个话题，咱们说说水杯的盖子。',
+    '价格是39.9元。',
+    '拿起来挺顺手的。',
+    '平常早上挤地铁的时候，拿在手里就能感觉出来它的大小和重量很适合放在日常通勤的小包里。',
+    '放在车里也挺方便的。',
+  ]
+  const text = `${contents[0]}\r\n${contents.slice(1).join('')}`
+  assert.deepEqual(splitSpeechForSynthesis(text, TTS_PRESETS.lanyun), contents)
+  assert.deepEqual(splitSpeechForSynthesis('!?\n   ', TTS_PRESETS.lanyun), [])
+  const long = '很长的一句'.repeat(70)
+  assert.deepEqual(splitSpeechForSynthesis(long, TTS_PRESETS.lanyun), splitSpeechText(long))
+})
+
+test('蓝云自适应情感触发的句子独立合成，自然讲解仍可成组', () => {
+  const question = '把杯子放哪儿？'
+  const emphasis = '重点是杯底要平。'
+  const explanation = '要是放小包，先看看底有多宽。放桌上也稳当。'
+  assert.deepEqual(
+    splitSpeechForSynthesis(`${question}${explanation}${emphasis}这样放着也稳。`, {
+      ...TTS_PRESETS.lanyun,
+      lanyunEmotionMode: 'natural',
+    }),
+    [question, explanation, emphasis, '这样放着也稳。'],
+  )
+})
+
+test('程度词“一点”不误当成数字，同时保留明确时间的降速', () => {
+  const spoken = '杯底平一点。放桌上也稳。'
+  assert.deepEqual(splitSpeechForSynthesis(spoken, TTS_PRESETS.lanyun), [spoken])
+  assert.equal(planSpeechPacing(spoken, DEFAULT_SPEECH_PACING).rate, 1)
+  assert.ok(planSpeechPacing('活动下午一点半开始。', DEFAULT_SPEECH_PACING).rate < 1)
+})
+
+test('蓝云给价格和注意事项各留一个播报段', () => {
+  const price = '今天体验价39元。'
+  const reminder = '请注意，仅限本人使用。'
+  assert.deepEqual(splitSpeechForSynthesis(price + reminder, TTS_PRESETS.lanyun), [price, reminder])
+})
 
 test('旧配置默认启用 0.85～1.15，非法数值、倒置范围及部分配置可恢复', () => {
   assert.deepEqual(normalizeSpeechPacing(), DEFAULT_SPEECH_PACING)

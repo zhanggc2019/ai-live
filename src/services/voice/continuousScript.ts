@@ -2,6 +2,7 @@ import {
   type ContinuationScriptRequest,
   countScriptCharacters,
   type LiveScriptResult,
+  type ScriptOutputStatus,
 } from 'shared/liveScript'
 import { splitSpeechText } from 'shared/voice'
 
@@ -19,6 +20,8 @@ export const CONTINUATION_THEMES = [
 export interface ContinuousScriptConfig {
   accountId: string
   seedScript: string
+  sourceScript?: string
+  scriptTitle?: string
   productIntro: string
   referenceText: string
   requirements: string
@@ -37,6 +40,11 @@ export interface ContinuousScriptState {
 
 export interface ContinuousScriptDriver {
   generate(request: ContinuationScriptRequest, signal: AbortSignal): Promise<LiveScriptResult>
+  onAttempt?(
+    request: ContinuationScriptRequest,
+    output: { text: string; status: ScriptOutputStatus; note?: string },
+    title?: string,
+  ): void
   onText(text: string): void
   onState(state: ContinuousScriptState): void
 }
@@ -170,6 +178,7 @@ export class ContinuousScriptController {
         customBaseURL: config.customBaseURL,
         productIntro: config.productIntro,
         referenceText: config.referenceText,
+        sourceScript: config.sourceScript ?? config.seedScript,
         requirements: config.requirements,
         seedScript: config.seedScript,
         targetCharacters: continuationTarget(config.seedScript),
@@ -184,14 +193,31 @@ export class ContinuousScriptController {
       }
       try {
         const result = await this.driver.generate(request, signal)
-        if (signal.aborted || generation !== this.generation) return
-        if (result.cancelled || result.error) throw new Error(result.error || '续稿已取消')
-        const text = result.text.trim()
-        const minimum = Math.max(220, Math.floor(request.targetCharacters * 0.55))
-        if (countScriptCharacters(text) < minimum)
-          throw new Error(`续稿字数不足，需至少约 ${minimum} 字`)
-        if (repeatedSentenceShare(text, this.history.slice(-3)) > 0.32)
-          throw new Error('续稿与近期内容重复过多')
+        const stale = signal.aborted || generation !== this.generation
+        const text = result.text
+        let rejection = result.error ?? ''
+        if (result.cancelled || stale) rejection ||= '续稿已取消'
+        else if (!rejection && countScriptCharacters(text) < 160)
+          rejection = '续稿字数不足，需至少约 160 字'
+        else if (!rejection && repeatedSentenceShare(text, this.history.slice(-3)) > 0.32)
+          rejection = '续稿与近期内容重复过多'
+        if (text.trim())
+          this.driver.onAttempt?.(
+            request,
+            {
+              text,
+              status:
+                stale || result.cancelled || result.error
+                  ? 'partial'
+                  : rejection
+                    ? 'skipped'
+                    : 'ready',
+              note: rejection || (result.truncated ? '模型输出达到上限' : undefined),
+            },
+            config.scriptTitle,
+          )
+        if (stale) return
+        if (rejection) throw new Error(rejection)
         this.history.push(text)
         this.history = this.history.slice(-3)
         this.usedThemes.push(theme)

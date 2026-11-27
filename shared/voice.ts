@@ -1,6 +1,25 @@
 export type TtsProviderId = 'mimo' | 'lanyun' | 'qwen' | 'openai-compatible'
 
 export type TtsLanguage = 'ZH' | 'EN' | 'JA' | 'ES' | 'AR'
+export const LANYUN_EMOTION_DEFAULTS = {
+  natural: { reminder: 0.1, question: 0.14, welcome: 0.22, emphasis: 0.28 },
+  expressive: { reminder: 0.18, question: 0.24, welcome: 0.36, emphasis: 0.46 },
+} as const
+
+type LanyunAdaptiveEmotionMode = keyof typeof LANYUN_EMOTION_DEFAULTS
+export type LanyunEmotionMode = 'original' | 'voice' | LanyunAdaptiveEmotionMode
+export type LanyunEmotionKind = keyof typeof LANYUN_EMOTION_DEFAULTS.natural
+export type LanyunEmotionStrengths = Partial<Record<LanyunEmotionKind, number>>
+
+const LANYUN_SENTENCE_TONES: [LanyunEmotionKind, RegExp][] = [
+  [
+    'reminder',
+    /^(?:提醒一下|注意一下|注意[，,：:]|这里(?:要)?注意|这一点要注意|务必|千万别|别忘了|不用担心|别着急)/,
+  ],
+  ['question', /[？?][！!？?”’」』"']*$/],
+  ['emphasis', /^(?:重点是|关键是|最要紧的是|尤其要看|特别要留意|真正有用的是)/],
+  ['welcome', /^(?:欢迎|刚进来|大家好|朋友们好|谢谢|感谢|嗨[，,]|哈喽)/],
+]
 
 export interface TtsSettings {
   provider: TtsProviderId
@@ -13,6 +32,24 @@ export interface TtsSettings {
   language?: TtsLanguage
   speechRate?: number
   intervalSilence?: number
+  lanyunEmotionMode?: LanyunEmotionMode
+  lanyunEmotionStrengths?: Partial<Record<LanyunAdaptiveEmotionMode, LanyunEmotionStrengths>>
+}
+
+/** 新配置默认沿用原音色，旧配置有情感描述时延续手动模式。 */
+export function resolveLanyunEmotionMode(
+  settings: Pick<TtsSettings, 'instructions' | 'lanyunEmotionMode'>,
+): LanyunEmotionMode {
+  return settings.lanyunEmotionMode ?? (settings.instructions.trim() ? 'voice' : 'original')
+}
+
+/** 播放分段和 TTS 请求共用句型判断，保留需要单独表达的句子。 */
+export function classifyLanyunEmotion(text: string): LanyunEmotionKind | undefined {
+  const sentence = text
+    .trim()
+    .replace(/^(?:不过|还有|另外|对了|所以)[，,]/, '')
+    .trimStart()
+  return LANYUN_SENTENCE_TONES.find(([, pattern]) => pattern.test(sentence))?.[0]
 }
 
 export interface TtsVoice {
